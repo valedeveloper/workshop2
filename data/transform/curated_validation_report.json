@@ -1,0 +1,71 @@
+{
+  "status": "passed_with_warnings",
+  "generated_at": "2026-10-14T14:46:12.640329+00:00",
+  "batch": {
+    "source": "curated_warehouse",
+    "tables": {
+      "grammy": {
+        "dim_date": "/opt/airflow/data/transform/dim_date.csv",
+        "dim_artist": "/opt/airflow/data/transform/dim_artist.csv",
+        "fact_music_award": "/opt/airflow/data/transform/fact_music_award.csv"
+      },
+      "spotify": {
+        "dim_genero": "/opt/airflow/data/transform/dim_genero.csv",
+        "dim_cancion": "/opt/airflow/data/transform/dim_cancion.csv",
+        "fact_spotify_artist_track_genre": "/opt/airflow/data/transform/fact_spotify_artist_track_genre.csv"
+      }
+    },
+    "input_sha256": {
+      "dim_date": "b57af31891de0253b5209caf0056a0502907bd84fc7668dec507f8aba5257f03",
+      "dim_artist": "d09f62c2f358656feb70a851838105546d8185915080cf018f38190634f33e5c",
+      "fact_music_award": "7ff5dd26404b8c5eb3fee64636c473a8a628170b21032d22028ecb39f7fb21f7",
+      "dim_genero": "92ef052deb1e87aee1de0d4f1472869d3197fe58a1aea1701efda0c07c4dc3d5",
+      "dim_cancion": "16dcbbf8987477cd032fd4ec6917755c0acd7c4e18a018864876622f9f2a0f52",
+      "fact_spotify_artist_track_genre": "93c92bedea5e91b1275b78a2d956e54542cdd95984d1953ffaa42ca49c7bb334"
+    }
+  },
+  "validation": {
+    "suite_name": "curated_warehouse_suite",
+    "expectations": 3,
+    "passed": 3,
+    "failed": 0,
+    "blocking_failures": [],
+    "warnings": [
+      "Grammy records without an attributable artist: 1840/4809; these rows remain in fact_music_award with a null artist_sk.",
+      "Spotify song-genre rows without an artist credit: 1/157529; they remain available for genre popularity metrics but are excluded from artist KPIs.",
+      "The Grammy source contains only winner=True records; cross-source KPIs measure artists with an observed winner record, not all historical Grammy nominees or winners."
+    ],
+    "informational": [
+      "Spotify artist credits are flattened to song-artist-genre rows; popularity-by-genre queries must deduplicate at song-genre grain."
+    ],
+    "rules": [
+      {
+        "rule_id": "curated-structural-integrity",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 24,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "curated-cross-source-relationships-and-grain",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 24,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "curated-analytical-domains",
+        "severity": "high",
+        "success": true,
+        "evaluated_count": 24,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      }
+    ]
+  }
+}

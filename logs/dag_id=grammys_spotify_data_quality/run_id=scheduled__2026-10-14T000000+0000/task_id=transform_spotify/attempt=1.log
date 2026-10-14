@@ -1,0 +1,7 @@
+{"timestamp":"2026-10-14T02:10:29.074271Z","level":"info","event":"Stats instance was created in PID 7 but accessed in PID 106. Re-initializing.","logger":"airflow.stats","filename":"stats.py","lineno":57}
+{"timestamp":"2026-10-14T02:10:29.786702Z","level":"info","event":"DAG bundles loaded: dags-folder, example_dags","logger":"airflow.dag_processing.bundles.manager.DagBundlesManager","filename":"manager.py","lineno":179}
+{"timestamp":"2026-10-14T02:10:29.795991Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/etl_dag.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
+{"timestamp":"2026-10-14T02:10:29.922131Z","level":"info","event":"Task instance is in running state","logger":"task.stdout"}
+{"timestamp":"2026-10-14T02:10:29.924673Z","level":"info","event":" Previous state of the Task instance: TaskInstanceState.QUEUED","logger":"task.stdout"}
+{"timestamp":"2026-10-14T02:10:29.925174Z","level":"info","event":"Current task name:transform_spotify","logger":"task.stdout"}
+{"timestamp":"2026-10-14T02:10:29.926139Z","level":"info","event":"Dag name:grammys_spotify_data_quality","logger":"task.stdout"}

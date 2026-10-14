@@ -1,0 +1,8 @@
+{"timestamp":"2026-10-13T04:03:21.059676Z","level":"info","event":"Stats instance was created in PID 7 but accessed in PID 203. Re-initializing.","logger":"airflow.stats","filename":"stats.py","lineno":57}
+{"timestamp":"2026-10-13T04:03:21.565198Z","level":"info","event":"DAG bundles loaded: dags-folder, example_dags","logger":"airflow.dag_processing.bundles.manager.DagBundlesManager","filename":"manager.py","lineno":179}
+{"timestamp":"2026-10-13T04:03:21.567726Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/etl_dag.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
+{"timestamp":"2026-10-13T04:03:21.646407Z","level":"info","event":"Task instance is in running state","logger":"task.stdout"}
+{"timestamp":"2026-10-13T04:03:21.646849Z","level":"info","event":" Previous state of the Task instance: TaskInstanceState.QUEUED","logger":"task.stdout"}
+{"timestamp":"2026-10-13T04:03:21.647226Z","level":"info","event":"Current task name:transform_grammys_pending","logger":"task.stdout"}
+{"timestamp":"2026-10-13T04:03:21.647499Z","level":"info","event":"Dag name:grammys_spotify_data_quality","logger":"task.stdout"}
+{"timestamp":"2026-10-13T04:03:21.649183Z","level":"info","event":"Skipping task.","reason":"Pendiente: implementar la transformación Grammy después de acordar la política de cuarentena y el modelo de destino.","logger":"task","filename":"task_runner.py","lineno":1137}

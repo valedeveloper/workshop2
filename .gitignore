@@ -1,0 +1,3 @@
+data/batches/*
+!data/batches/.gitkeep
+.env

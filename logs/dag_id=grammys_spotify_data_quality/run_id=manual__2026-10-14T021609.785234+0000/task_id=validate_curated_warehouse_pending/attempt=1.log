@@ -1,0 +1,8 @@
+{"timestamp":"2026-10-14T02:16:47.968314Z","level":"info","event":"Stats instance was created in PID 7 but accessed in PID 142. Re-initializing.","logger":"airflow.stats","filename":"stats.py","lineno":57}
+{"timestamp":"2026-10-14T02:16:48.616147Z","level":"info","event":"DAG bundles loaded: dags-folder, example_dags","logger":"airflow.dag_processing.bundles.manager.DagBundlesManager","filename":"manager.py","lineno":179}
+{"timestamp":"2026-10-14T02:16:48.618953Z","level":"info","event":"Filling up the DagBag from /opt/airflow/dags/etl_dag.py","logger":"airflow.models.dagbag.BundleDagBag","filename":"dagbag.py","lineno":593}
+{"timestamp":"2026-10-14T02:16:48.724138Z","level":"info","event":"Task instance is in running state","logger":"task.stdout"}
+{"timestamp":"2026-10-14T02:16:48.725074Z","level":"info","event":" Previous state of the Task instance: TaskInstanceState.QUEUED","logger":"task.stdout"}
+{"timestamp":"2026-10-14T02:16:48.725759Z","level":"info","event":"Current task name:validate_curated_warehouse_pending","logger":"task.stdout"}
+{"timestamp":"2026-10-14T02:16:48.726155Z","level":"info","event":"Dag name:grammys_spotify_data_quality","logger":"task.stdout"}
+{"timestamp":"2026-10-14T02:16:48.728404Z","level":"info","event":"Skipping task.","reason":"Pendiente: definir y ejecutar las reglas de calidad de la capa transformada.","logger":"task","filename":"task_runner.py","lineno":1137}
