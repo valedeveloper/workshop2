@@ -12,6 +12,7 @@ from gx.validation_common import (
     ValidationSummary,
     raise_for_blocking_failures,
     run_expectation_suite,
+    run_multi_asset_expectation_suite,
     write_validation_report,
 )
 
@@ -179,89 +180,261 @@ def run_validation(
     fact_grammy = tables["fact_music_award"]
     fact_spotify = tables["fact_spotify_artist_track_genre"]
 
-    relationships_checks = [
-        _foreign_key_is_valid(fact_grammy, "date_sk", dim_date_keys),
-        _foreign_key_is_valid(
-            fact_grammy, "artist_sk", dim_artist_keys, allow_null=True
-        ),
-        _foreign_key_is_valid(
-            fact_spotify, "artist_sk", dim_artist_keys, allow_null=True
-        ),
-        _foreign_key_is_valid(fact_spotify, "track_sk", dim_track_keys),
-        _foreign_key_is_valid(fact_spotify, "genre_sk", dim_genre_keys),
-    ]
+    rules: list[QualityRule] = []
 
-    dim_date = tables["dim_date"]
-    numeric_year = pd.to_numeric(_column(dim_date, "year"), errors="coerce")
-    year_valid = bool(
-        len(numeric_year) > 0
-        and numeric_year.notna().all()
-        and numeric_year.eq(numeric_year.round()).all()
-        and numeric_year.between(1900, pd.Timestamp.now().year + 1).all()
-    )
-    decade_valid = bool(
-        len(dim_date) > 0
-        and pd.to_numeric(_column(dim_date, "decade"), errors="coerce").eq(
-            (numeric_year // 10) * 10
-        ).all()
-    )
-    domains_checks = [
-        year_valid,
-        decade_valid,
-        _column(fact_grammy, "award_count").eq(1).all(),
-        _column(fact_grammy, "winner").dropna().isin({True, False}).all(),
-        _values_in_range(fact_spotify, "popularity", 0, 100),
-        _values_in_range(fact_spotify, "danceability", 0, 1),
-        _values_in_range(fact_spotify, "energy", 0, 1),
-        _values_in_range(fact_spotify, "valence", 0, 1),
-    ]
+    # 1. R-CUR-01-COLS: Esquemas exactos y tablas no vacías
+    for table_name, expected_columns in TABLE_COLUMNS.items():
+        rules.append(
+            QualityRule(
+                rule_id=f"R-CUR-01-COLS-{table_name}",
+                severity="critical",
+                target_asset=table_name,
+                expectation=gx.expectations.ExpectTableColumnsToMatchSet(
+                    column_set=list(expected_columns),
+                    exact_match=True,
+                ),
+                description=f"Esquema exacto de la tabla {table_name}",
+            )
+        )
+        rules.append(
+            QualityRule(
+                rule_id=f"R-CUR-01-ROWS-{table_name}",
+                severity="critical",
+                target_asset=table_name,
+                expectation=gx.expectations.ExpectTableRowCountToBeBetween(
+                    min_value=1
+                ),
+                description=f"Tabla {table_name} no vacía",
+            )
+        )
 
-    maximum_checks = max(
-        len(structure_checks),
-        len(relationships_checks),
-        len(domains_checks),
-    )
-    checks = pd.DataFrame(
-        {
-            "structural_integrity": structure_checks
-            + [True] * (maximum_checks - len(structure_checks)),
-            "cross_source_relationships_and_grain": relationships_checks
-            + [True] * (maximum_checks - len(relationships_checks)),
-            "analytical_domains": domains_checks
-            + [True] * (maximum_checks - len(domains_checks)),
-        }
-    )
-    rules = [
+    # 2. R-CUR-02-VALS: Dominios e Integridad Referencial
+    # dim_date
+    rules.append(
         QualityRule(
-            rule_id="curated-structural-integrity",
+            rule_id="R-CUR-02-VALS-date-year",
             severity="critical",
-            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
-                column="structural_integrity",
-                value_set=[True],
+            target_asset="dim_date",
+            expectation=gx.expectations.ExpectColumnValuesToBeBetween(
+                column="year",
+                min_value=1900,
+                max_value=pd.Timestamp.now().year + 1,
             ),
-        ),
+            description="Año en dim_date dentro de rango histórico",
+        )
+    )
+    # fact_music_award
+    rules.append(
         QualityRule(
-            rule_id="curated-cross-source-relationships-and-grain",
+            rule_id="R-CUR-02-VALS-award-count",
             severity="critical",
+            target_asset="fact_music_award",
             expectation=gx.expectations.ExpectColumnValuesToBeInSet(
-                column="cross_source_relationships_and_grain",
-                value_set=[True],
+                column="award_count",
+                value_set=[1],
             ),
-        ),
+            description="award_count estrictamente igual a 1",
+        )
+    )
+    rules.append(
         QualityRule(
-            rule_id="curated-analytical-domains",
+            rule_id="R-CUR-02-VALS-award-winner",
+            severity="critical",
+            target_asset="fact_music_award",
+            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
+                column="winner",
+                value_set=[True, False, 1, 0, "True", "False"],
+            ),
+            description="winner booleano en fact_music_award",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-02-VALS-fk-date",
+            severity="critical",
+            target_asset="fact_music_award",
+            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
+                column="date_sk",
+                value_set=list(dim_date_keys),
+            ),
+            description="FK fact_music_award.date_sk existe en dim_date",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-02-VALS-fk-artist-award",
+            severity="critical",
+            target_asset="fact_music_award",
+            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
+                column="artist_sk",
+                value_set=list(dim_artist_keys),
+            ),
+            description="FK fact_music_award.artist_sk existe en dim_artist",
+        )
+    )
+    # fact_spotify_artist_track_genre
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-02-VALS-fk-track",
+            severity="critical",
+            target_asset="fact_spotify_artist_track_genre",
+            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
+                column="track_sk",
+                value_set=list(dim_track_keys),
+            ),
+            description="FK fact_spotify.track_sk existe en dim_cancion",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-02-VALS-fk-genre",
+            severity="critical",
+            target_asset="fact_spotify_artist_track_genre",
+            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
+                column="genre_sk",
+                value_set=list(dim_genre_keys),
+            ),
+            description="FK fact_spotify.genre_sk existe en dim_genero",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-02-VALS-fk-artist-spotify",
+            severity="critical",
+            target_asset="fact_spotify_artist_track_genre",
+            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
+                column="artist_sk",
+                value_set=list(dim_artist_keys),
+            ),
+            description="FK fact_spotify.artist_sk existe en dim_artist",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-02-VALS-spotify-popularity",
             severity="high",
-            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
-                column="analytical_domains",
-                value_set=[True],
+            target_asset="fact_spotify_artist_track_genre",
+            expectation=gx.expectations.ExpectColumnValuesToBeBetween(
+                column="popularity",
+                min_value=0,
+                max_value=100,
             ),
-        ),
-    ]
-    result = run_expectation_suite(
-        dataframe=checks,
+            description="popularity en [0, 100]",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-02-VALS-spotify-danceability",
+            severity="high",
+            target_asset="fact_spotify_artist_track_genre",
+            expectation=gx.expectations.ExpectColumnValuesToBeBetween(
+                column="danceability",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            description="danceability en [0.0, 1.0]",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-02-VALS-spotify-energy",
+            severity="high",
+            target_asset="fact_spotify_artist_track_genre",
+            expectation=gx.expectations.ExpectColumnValuesToBeBetween(
+                column="energy",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            description="energy en [0.0, 1.0]",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-02-VALS-spotify-valence",
+            severity="high",
+            target_asset="fact_spotify_artist_track_genre",
+            expectation=gx.expectations.ExpectColumnValuesToBeBetween(
+                column="valence",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            description="valence en [0.0, 1.0]",
+        )
+    )
+
+    # 3. R-CUR-03-DUPS: Unicidad de Claves Primarias y Grano Analítico
+    for table_name, pk_cols in PRIMARY_KEYS.items():
+        rules.append(
+            QualityRule(
+                rule_id=f"R-CUR-03-DUPS-pk-{table_name}",
+                severity="critical",
+                target_asset=table_name,
+                expectation=gx.expectations.ExpectColumnValuesToBeUnique(
+                    column=pk_cols[0]
+                ),
+                description=f"Unicidad de Primary Key {pk_cols[0]} en {table_name}",
+            )
+        )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-03-DUPS-artist-normalized",
+            severity="critical",
+            target_asset="dim_artist",
+            expectation=gx.expectations.ExpectColumnValuesToBeUnique(
+                column="artist_name_normalized"
+            ),
+            description="Unicidad de artist_name_normalized en dim_artist",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-03-DUPS-track-id",
+            severity="critical",
+            target_asset="dim_cancion",
+            expectation=gx.expectations.ExpectColumnValuesToBeUnique(
+                column="track_id"
+            ),
+            description="Unicidad de track_id en dim_cancion",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-03-DUPS-genre-name",
+            severity="critical",
+            target_asset="dim_genero",
+            expectation=gx.expectations.ExpectColumnValuesToBeUnique(
+                column="genre_name"
+            ),
+            description="Unicidad de genre_name en dim_genero",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-03-DUPS-year",
+            severity="critical",
+            target_asset="dim_date",
+            expectation=gx.expectations.ExpectColumnValuesToBeUnique(
+                column="year"
+            ),
+            description="Unicidad de year en dim_date",
+        )
+    )
+    rules.append(
+        QualityRule(
+            rule_id="R-CUR-03-DUPS-spotify-grain",
+            severity="critical",
+            target_asset="fact_spotify_artist_track_genre",
+            expectation=gx.expectations.ExpectCompoundColumnsToBeUnique(
+                column_list=["track_sk", "artist_sk", "genre_sk"]
+            ),
+            description="Unicidad estricta del grano (track_sk, artist_sk, genre_sk)",
+        )
+    )
+
+    result = run_multi_asset_expectation_suite(
+        tables=tables,
         suite_name="curated_warehouse_suite",
         data_source_name="curated_warehouse_source",
-        asset_name="curated_warehouse_checks",
         rules=rules,
     )
 

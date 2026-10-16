@@ -1,6 +1,6 @@
 {
   "status": "passed_with_warnings",
-  "generated_at": "2026-10-14T14:46:12.640329+00:00",
+  "generated_at": "2026-10-16T14:56:48.815342+00:00",
   "batch": {
     "source": "curated_warehouse",
     "tables": {
@@ -16,9 +16,9 @@
       }
     },
     "input_sha256": {
-      "dim_date": "b57af31891de0253b5209caf0056a0502907bd84fc7668dec507f8aba5257f03",
+      "dim_date": "ed1d1bf6c73f982d215b5472a363d7979f1205bf6bdfacb3a8a9be24b6a938f8",
       "dim_artist": "d09f62c2f358656feb70a851838105546d8185915080cf018f38190634f33e5c",
-      "fact_music_award": "7ff5dd26404b8c5eb3fee64636c473a8a628170b21032d22028ecb39f7fb21f7",
+      "fact_music_award": "7ecf79d9ff23ae1de8d9dc41a306edfba176e3a170510e6f509a568a51211fcf",
       "dim_genero": "92ef052deb1e87aee1de0d4f1472869d3197fe58a1aea1701efda0c07c4dc3d5",
       "dim_cancion": "16dcbbf8987477cd032fd4ec6917755c0acd7c4e18a018864876622f9f2a0f52",
       "fact_spotify_artist_track_genre": "93c92bedea5e91b1275b78a2d956e54542cdd95984d1953ffaa42ca49c7bb334"
@@ -26,8 +26,8 @@
   },
   "validation": {
     "suite_name": "curated_warehouse_suite",
-    "expectations": 3,
-    "passed": 3,
+    "expectations": 35,
+    "passed": 35,
     "failed": 0,
     "blocking_failures": [],
     "warnings": [
@@ -40,28 +40,316 @@
     ],
     "rules": [
       {
-        "rule_id": "curated-structural-integrity",
+        "rule_id": "R-CUR-01-COLS-dim_date",
         "severity": "critical",
         "success": true,
-        "evaluated_count": 24,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-ROWS-dim_date",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-COLS-dim_artist",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-ROWS-dim_artist",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-COLS-dim_cancion",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-ROWS-dim_cancion",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-COLS-dim_genero",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-ROWS-dim_genero",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-COLS-fact_music_award",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-ROWS-fact_music_award",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-COLS-fact_spotify_artist_track_genre",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-01-ROWS-fact_spotify_artist_track_genre",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": null,
+        "unexpected_count": null,
+        "unexpected_percent": null,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-02-VALS-date-year",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 63,
         "unexpected_count": 0,
         "unexpected_percent": 0.0,
         "message": null
       },
       {
-        "rule_id": "curated-cross-source-relationships-and-grain",
+        "rule_id": "R-CUR-02-VALS-award-count",
         "severity": "critical",
         "success": true,
-        "evaluated_count": 24,
+        "evaluated_count": 4809,
         "unexpected_count": 0,
         "unexpected_percent": 0.0,
         "message": null
       },
       {
-        "rule_id": "curated-analytical-domains",
+        "rule_id": "R-CUR-02-VALS-award-winner",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 4809,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-02-VALS-fk-date",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 4809,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-02-VALS-fk-artist-award",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 4809,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-02-VALS-fk-track",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 157529,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-02-VALS-fk-genre",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 157529,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-02-VALS-fk-artist-spotify",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 157529,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-02-VALS-spotify-popularity",
         "severity": "high",
         "success": true,
-        "evaluated_count": 24,
+        "evaluated_count": 157529,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-02-VALS-spotify-danceability",
+        "severity": "high",
+        "success": true,
+        "evaluated_count": 157529,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-02-VALS-spotify-energy",
+        "severity": "high",
+        "success": true,
+        "evaluated_count": 157529,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-02-VALS-spotify-valence",
+        "severity": "high",
+        "success": true,
+        "evaluated_count": 157529,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-pk-dim_date",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 63,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-pk-dim_artist",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 30942,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-pk-dim_cancion",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 89741,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-pk-dim_genero",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 114,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-pk-fact_music_award",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 4809,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-pk-fact_spotify_artist_track_genre",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 157529,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-artist-normalized",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 30942,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-track-id",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 89741,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-genre-name",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 114,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-year",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 63,
+        "unexpected_count": 0,
+        "unexpected_percent": 0.0,
+        "message": null
+      },
+      {
+        "rule_id": "R-CUR-03-DUPS-spotify-grain",
+        "severity": "critical",
+        "success": true,
+        "evaluated_count": 157529,
         "unexpected_count": 0,
         "unexpected_percent": 0.0,
         "message": null

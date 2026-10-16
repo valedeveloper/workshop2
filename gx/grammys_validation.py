@@ -50,65 +50,88 @@ def run_validation(
     malformed_rows = malformed_rows_value
 
     current_year = pd.Timestamp.now().year
-    schema_valid = (
-        tuple(str(column) for column in dataframe.columns) == REQUIRED_COLUMNS
-        and not malformed_rows
-        and not dataframe.empty
-    )
-    required_fields_valid = all(
-        column in dataframe
-        and dataframe[column].notna().all()
-        and dataframe[column].astype("string").str.strip().ne("").all()
-        for column in ("year", "category", "winner")
-    )
-    year_values = (
-        pd.to_numeric(dataframe["year"], errors="coerce")
-        if "year" in dataframe
-        else pd.Series(dtype="float64")
-    )
-    winner_values = (
-        dataframe["winner"].astype("string").str.casefold()
-        if "winner" in dataframe
-        else pd.Series(dtype="string")
-    )
-    domains_valid = (
-        not year_values.empty
-        and year_values.between(1900, current_year + 1).all()
-        and winner_values.isin({"true", "false"}).all()
-    )
-    checks = pd.DataFrame(
-        {
-            "schema_valid": [schema_valid],
-            "required_fields_valid": [required_fields_valid],
-            "domains_valid": [domains_valid],
-        }
-    )
+    dataframe["year"] = pd.to_numeric(dataframe["year"], errors="coerce")
+
     rules = [
+        # 1. Columnas (Contrato y esquema de la extracción relacional)
         QualityRule(
-            rule_id="Q01-schema",
+            rule_id="R-GRAM-01-COLS",
             severity="critical",
-            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
-                column="schema_valid",
-                value_set=[True],
+            expectation=gx.expectations.ExpectTableColumnsToMatchSet(
+                column_set=list(REQUIRED_COLUMNS),
+                exact_match=True,
             ),
+            description="Esquema exacto de 10 columnas extraídas de PostgreSQL",
+        ),
+        # 2. Valores permitidos (Dominios y no-nulidad)
+        QualityRule(
+            rule_id="R-GRAM-02-VALS-year-null",
+            severity="critical",
+            expectation=gx.expectations.ExpectColumnValuesToNotBeNull(
+                column="year"
+            ),
+            description="Campo year no nulo",
         ),
         QualityRule(
-            rule_id="Q02-required-analytical-fields",
-            severity="high",
-            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
-                column="required_fields_valid",
-                value_set=[True],
+            rule_id="R-GRAM-02-VALS-year-range",
+            severity="critical",
+            expectation=gx.expectations.ExpectColumnValuesToBeBetween(
+                column="year",
+                min_value=1900,
+                max_value=current_year + 1,
             ),
+            description=f"Campo year en rango histórico [1900, {current_year + 1}]",
         ),
         QualityRule(
-            rule_id="Q03-year-and-winner-domains",
-            severity="high",
-            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
-                column="domains_valid",
-                value_set=[True],
+            rule_id="R-GRAM-02-VALS-category",
+            severity="critical",
+            expectation=gx.expectations.ExpectColumnValuesToNotBeNull(
+                column="category"
             ),
+            description="Campo category no nulo",
+        ),
+        QualityRule(
+            rule_id="R-GRAM-02-VALS-winner",
+            severity="critical",
+            expectation=gx.expectations.ExpectColumnValuesToNotBeNull(
+                column="winner"
+            ),
+            description="Campo winner no nulo",
+        ),
+        # 3. Filas repetidas (Unicidad de registros)
+        QualityRule(
+            rule_id="R-GRAM-03-DUPS-rows",
+            severity="high",
+            expectation=gx.expectations.ExpectCompoundColumnsToBeUnique(
+                column_list=list(REQUIRED_COLUMNS),
+            ),
+            description="Ausencia de filas duplicadas en el lote extraído",
+        ),
+        QualityRule(
+            rule_id="R-GRAM-03-DUPS-event",
+            severity="high",
+            expectation=gx.expectations.ExpectCompoundColumnsToBeUnique(
+                column_list=["year", "category", "nominee", "title", "artist"],
+            ),
+            description="Unicidad del evento de premiación (year, category, nominee, title, artist)",
         ),
     ]
+
+    result = run_expectation_suite(
+        dataframe=dataframe,
+        suite_name="grammys_quality_suite",
+        data_source_name="grammys_pandas_source",
+        asset_name="grammys_records",
+        rules=rules,
+    )
+
+    if malformed_rows:
+        malformed_msg = (
+            f"R-GRAM-01-COLS failed (critical): raw batch contains "
+            f"malformed physical lines: {malformed_rows}"
+        )
+        result["blocking_failures"].append(malformed_msg)
+        result["failed"] += 1
 
     winner_counts = (
         dataframe["winner"].value_counts(dropna=False).to_dict()
@@ -128,21 +151,22 @@ def run_validation(
     }.issubset(winner_values)
     if not has_both_outcomes or null_winner_count:
         warning = (
-            "Q10-winner-coverage: "
+            "R-GRAM-02-VALS-coverage: "
             f"nulls={null_winner_count}, both outcomes present={has_both_outcomes}; "
             "the source is winner-biased and does not support complete nomination "
             "or victory-rate KPIs."
         )
-    result = run_expectation_suite(
-        dataframe=checks,
-        suite_name="grammys_quality_suite",
-        data_source_name="grammys_pandas_source",
-        asset_name="grammys_records",
-        rules=rules,
-    )
-    if not has_both_outcomes or null_winner_count:
         result["warnings"].append(warning)
         print(f"WARNING: {warning}")
+
+    null_artist_count = int(dataframe["artist"].isna().sum())
+    if null_artist_count:
+        artist_warning = (
+            f"R-GRAM-02-VALS-artist-coverage: {null_artist_count}/{len(dataframe)} "
+            f"records ({round(100.0 * null_artist_count / len(dataframe), 2)}%) have null artist; "
+            "these awards will be assigned artist_sk = NULL without artificial imputation."
+        )
+        result["warnings"].append(artist_warning)
     print(f"Grammy winner value counts: {winner_counts}")
     print(f"Grammy GX validation summary: {result}")
     if report_path is not None:

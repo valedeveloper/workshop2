@@ -134,57 +134,98 @@ def run_validation(
         raw_dataframe
     )
 
-    schema_valid = (
-        tuple(column for column in REQUIRED_COLUMNS if column in dataframe.columns)
-        == REQUIRED_COLUMNS
-        and not dataframe.empty
-    )
-    analytical_validity = _analytical_row_validity(dataframe)
-    analytics_valid = bool(analytical_validity.all())
-    grain_valid = (
-        duplicate_groups_consistent
-        and not dataframe.duplicated(list(GRAIN_COLUMNS)).any()
-    )
-    checks = pd.DataFrame(
-        {
-            "schema_valid": [schema_valid],
-            "analytical_fields_valid": [analytics_valid],
-            "grain_valid": [grain_valid],
-        }
-    )
     rules = [
+        # 1. Columnas (Esquema y presencia de columnas analíticas)
         QualityRule(
-            rule_id="Q01-schema",
+            rule_id="R-SPOT-01-COLS",
             severity="critical",
-            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
-                column="schema_valid",
-                value_set=[True],
+            expectation=gx.expectations.ExpectTableColumnsToMatchSet(
+                column_set=list(REQUIRED_COLUMNS),
+                exact_match=False,
             ),
+            description="Contrato de esquema: presencia de columnas obligatorias",
+        ),
+        # 2. Valores permitidos (Completitud y dominios métricos)
+        QualityRule(
+            rule_id="R-SPOT-02-VALS-track-id",
+            severity="critical",
+            expectation=gx.expectations.ExpectColumnValuesToNotBeNull(
+                column="track_id"
+            ),
+            description="Identificador track_id no nulo",
         ),
         QualityRule(
-            rule_id="Q02-analytical-fields-and-domains",
-            severity="high",
-            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
-                column="analytical_fields_valid",
-                value_set=[True],
+            rule_id="R-SPOT-02-VALS-genre",
+            severity="critical",
+            expectation=gx.expectations.ExpectColumnValuesToNotBeNull(
+                column="track_genre"
             ),
+            description="Categoría track_genre no nula",
         ),
         QualityRule(
-            rule_id="Q03-song-genre-grain",
+            rule_id="R-SPOT-02-VALS-popularity",
             severity="high",
-            expectation=gx.expectations.ExpectColumnValuesToBeInSet(
-                column="grain_valid",
-                value_set=[True],
+            expectation=gx.expectations.ExpectColumnValuesToBeBetween(
+                column="popularity",
+                min_value=0,
+                max_value=100,
             ),
+            description="Métrica popularity en dominio [0, 100]",
+        ),
+        QualityRule(
+            rule_id="R-SPOT-02-VALS-danceability",
+            severity="high",
+            expectation=gx.expectations.ExpectColumnValuesToBeBetween(
+                column="danceability",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            description="Métrica danceability en dominio [0.0, 1.0]",
+        ),
+        QualityRule(
+            rule_id="R-SPOT-02-VALS-energy",
+            severity="high",
+            expectation=gx.expectations.ExpectColumnValuesToBeBetween(
+                column="energy",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            description="Métrica energy en dominio [0.0, 1.0]",
+        ),
+        QualityRule(
+            rule_id="R-SPOT-02-VALS-valence",
+            severity="high",
+            expectation=gx.expectations.ExpectColumnValuesToBeBetween(
+                column="valence",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            description="Métrica valence en dominio [0.0, 1.0]",
+        ),
+        # 3. Filas repetidas (Unicidad en el grano track_id + track_genre)
+        QualityRule(
+            rule_id="R-SPOT-03-DUPS-grain",
+            severity="critical",
+            expectation=gx.expectations.ExpectCompoundColumnsToBeUnique(
+                column_list=list(GRAIN_COLUMNS)
+            ),
+            description="Unicidad estricta en el grano compuesto (track_id, track_genre)",
         ),
     ]
     result = run_expectation_suite(
-        dataframe=checks,
+        dataframe=dataframe,
         suite_name="spotify_quality_suite",
         data_source_name="spotify_pandas_source",
-        asset_name="spotify_analytical_checks",
+        asset_name="spotify_analytical_dataset",
         rules=rules,
     )
+    if not duplicate_groups_consistent:
+        inconsistent_msg = (
+            "R-SPOT-03-DUPS failed (critical): found duplicate rows with conflicting "
+            "attributes across identical (track_id, track_genre) keys."
+        )
+        result["blocking_failures"].append(inconsistent_msg)
+        result["failed"] += 1
 
     normalized_path = data_path.parent / "spotify_normalized.csv"
     dataframe.to_csv(normalized_path, index=False)

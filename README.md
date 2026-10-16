@@ -1,257 +1,446 @@
 # Integración analítica de datos de Spotify y premios Grammy
 
-<p align="center">
-  <strong>Proyecto académico de integración, calidad de datos y modelamiento dimensional</strong><br>
-  Catálogo musical de Spotify · Registros de premios Grammy
-</p>
+> **Estado del proyecto:** las validaciones raw y curadas cuentan con evidencia de ejecución local. La ejecución integrada completa en Airflow, la carga verificada en PostgreSQL, la demostración de *safe rerun* y un dashboard consultando el data warehouse siguen pendientes de evidencia end-to-end.
 
-## 1. Problem and analytical objective
+## 1. Problema y objetivo analítico
 
-Spotify y los registros de los premios Grammy describen aspectos relacionados de la industria musical, pero tienen unidades de observación distintas. Spotify contiene canciones, características de audio, popularidad y créditos de artista; la fuente Grammy contiene registros de premios con año, categoría, artista asociado y estado ganador. Sin una estrategia explícita de integración, no es posible estudiar conjuntamente la presencia de artistas en ambas fuentes ni comparar características de popularidad con sus registros Grammy.
+Spotify describe canciones, artistas y géneros; los registros Grammy describen registros de premios. Las fuentes tienen granos distintos, por lo que una unión (`JOIN`) directa entre sus filas puede multiplicar medidas y producir indicadores incorrectos.
 
-El objetivo analítico es integrar ambas fuentes a través de una dimensión compartida de artista, conservando el grano propio de cada conjunto de datos. La integración permitirá medir la presencia de registros Grammy ganadores entre los artistas acreditados en Spotify y comparar popularidad musical por género y por condición Grammy.
+**Objetivo:** integrar ambas fuentes mediante una dimensión compartida de artista, conservar el grano de cada fuente y construir un almacén dimensional validado que permita responder cuatro requerimientos analíticos.
 
-La unión de artistas se basa en nombres normalizados: se eliminan espacios externos, se compactan espacios internos consecutivos y se compara sin distinguir mayúsculas. Esta regla es determinista, pero no confirma que dos nombres correspondan a la misma persona ni resuelve alias u homónimos.
+## 2. Requerimientos analíticos
 
-## 2. Analytical requirements
-
-Los cuatro requerimientos siguientes reemplazan los cinco análisis anteriores. Los KPI que involucran registros Grammy deben interpretarse considerando la cobertura observada de la fuente.
-
-| ID | Analytical Requirement | Required Data | Source(s) | Expected KPI(s) | Required Level of Detail | Why both sources are combined / traceability |
-|---|---|---|---|---|---|---|
-| R1 | ¿Qué porcentaje de los artistas distintos acreditados en Spotify tiene al menos un registro Grammy marcado como ganador? | Spotify: `artists`; Grammy: `artist`, `winner`. Ambas fuentes usan nombres normalizados para resolver el `artist_sk` compartido. | Spotify: catálogo CSV. Grammy: `workshop2.public.grammys`. | Porcentaje de artistas Spotify atribuibles con al menos un registro asociado a `winner = TRUE`; numerador y denominador de artistas distintos. | Una fila por artista distinto de Spotify; artistas no identificados se excluyen. | Es un KPI de cruce: el conjunto Spotify forma el denominador y los registros Grammy identifican los artistas ganadores. Se implementa mediante `dim_artist`, `fact_spotify_artist_track_genre` y `fact_music_award`. |
-| R2 | ¿Cuál es la popularidad promedio de las canciones en cada género musical? | Spotify: `track_id`, `track_genre`, `popularity`; el promedio se calcula una sola vez por canción y género, aunque la canción tenga varios artistas. | Spotify: catálogo CSV. | Promedio de `popularity` por género y cantidad de canciones consideradas. | Género y canción-género; no se limita a un Top 10. | Es una métrica Spotify. El grano del hecho se expande por artista, por lo que el cálculo primero consolida las filas a canción-género para no ponderar canciones con más créditos. |
-| R3 | ¿Cuáles son los cinco géneros asociados a más registros Grammy ganadores entre sus artistas acreditados en Spotify? | Spotify: `track_id`, `track_genre`, `artists`; Grammy: `artist`, `winner`, un registro por fila. | Spotify y `workshop2.public.grammys`. | Top 5 de géneros según la suma de `award_count` de registros Grammy `winner = TRUE`; se informa también el número de artistas Spotify distintos asociados a esos registros. | Género, tras deduplicar cada par artista-género; cada registro Grammy se cuenta una vez por género al que se asocia su artista. | El KPI requiere vincular los artistas entre fuentes y trasladar el género Spotify a cada artista. Un artista con varias canciones de un género no multiplica sus registros Grammy para ese género. |
-| R4 | ¿Cómo difiere la popularidad promedio de las canciones por artista entre artistas con y sin registro Grammy ganador observado? | Spotify: `track_id`, `artists`, `track_genre`, `popularity`; Grammy: `artist`, `winner`. | Spotify y `workshop2.public.grammys`. | Popularidad promedio por artista y luego promedio de esas medias en cada grupo; cantidad de artistas por grupo. | Consolidar canción-género, promediar cada canción entre sus géneros, deduplicar artista-canción y formar los dos grupos de artistas. | Es un KPI de cruce: la dimensión compartida clasifica a cada artista Spotify según si tiene al menos un registro Grammy ganador observado. Canciones con varios artistas cuentan una vez para cada artista acreditado. |
-
-### Alcance interpretativo
-
-La tabla Grammy actualmente disponible contiene 4.809 registros observados y todos tienen `winner = TRUE`. Por tanto, R1, R3 y R4 se refieren a artistas asociados a registros ganadores observados; no miden la cobertura completa de nominados ni una tasa de victoria sobre todas las nominaciones. Los artistas sin una atribución de nombre usable permanecen en el hecho Grammy con `artist_sk` nulo y no se incluyen en los KPI de artistas.
-
-## 3. Data sources
-
-| Fuente | Ubicación y formato | Campos relevantes | Unidad de observación y limitaciones |
+| ID | Pregunta analítica | KPI / salida | Regla de cálculo y trazabilidad |
 |---|---|---|---|
-| Premios Grammy | El DAG limpia `data/raw/the_grammy_awards.csv`, lo carga una sola vez como fuente en PostgreSQL `workshop2.public.grammys` y lo extrae a un lote CSV inmutable. | `year`, `category`, `nominee`, `artist`, `winner`, `title`. | Una fila por registro Grammy de la tabla fuente. El lote perfilado tiene 4.809 registros, 638 categorías y `winner = TRUE` en todas las filas. `artist` falta en 1.840 registros (38,26 %), limitando los análisis atribuibles a artistas. |
-| Catálogo Spotify | `data/raw/spotify_dataset.csv`; el DAG valida y genera un CSV normalizado. | `track_id`, `artists`, `track_genre`, `popularity`, `energy`, `valence`, `danceability`, además de atributos descriptivos de canción. | El archivo perfilado contiene 114.000 observaciones de canción-género y 114 géneros. Se encontraron 450 repeticiones excedentes en 444 claves duplicadas (`track_id`, `track_genre`); las filas repetidas concordaban en sus demás atributos. `artists` puede incluir varios nombres separados por `;`. |
+| R1 | ¿Qué porcentaje de artistas distintos acreditados en Spotify tiene al menos un registro Grammy ganador observado? | Porcentaje, numerador y denominador de artistas distintos. | Cruzar artistas Spotify y registros Grammy con `winner = TRUE` por `artist_sk`. Excluir créditos Spotify sin artista identificable. |
+| R2 | ¿Cuál es la popularidad promedio de las canciones por género? | Popularidad promedio y número de canciones por género. | Consolidar a una fila por `(track_id, track_genre)` antes de calcular la media; una canción cuenta una vez por género, independientemente del número de artistas. |
+| R3 | ¿Cuáles son los cinco géneros asociados a más registros Grammy ganadores observados entre artistas acreditados en Spotify? | Top 5 de géneros, registros Grammy observados y artistas Spotify distintos asociados. | Deduplicar los pares artista-género antes de relacionarlos con los registros Grammy ganadores. Cada registro se cuenta una vez por género al que se asocia el artista. |
+| R4 | ¿Cómo difiere la popularidad promedio por artista entre quienes tienen y no tienen un registro Grammy ganador observado? | Media de las medias por artista y número de artistas por grupo. | Consolidar canción-género; promediar la popularidad por canción; deduplicar artista-canción; calcular la media por artista y comparar grupos. |
 
-**Por qué aparece una tabla `grammys` en PostgreSQL:** en el flujo implementado `grammys` es la tabla fuente/staging de `workshop2`, no una dimensión ni una tabla de hechos del almacén. El DAG primero carga allí el CSV Grammy limpio porque la extracción posterior consulta explícitamente `workshop2.public.grammys`. `grammys_source_load` es una tabla técnica adicional que conserva el hash y la procedencia del archivo cargado para evitar sobrescribir silenciosamente una fuente distinta. El cargador del almacén también apunta actualmente a la base `workshop2`; por eso ambas capas aparecen bajo la misma base, aunque cumplen funciones distintas. La carga analítica no copia `grammys` al conjunto de seis tablas dimensionales.
+Consultas: [`sql/analytical_queries.sql`](./sql/analytical_queries.sql).
 
-## 4. Data profiling and quality risk analysis
+## 3. Fuentes de datos
 
-El perfilado que sustenta las reglas de calidad se hizo sobre los lotes de origen identificados arriba. Las cifras reflejan la versión perfilada y no deben interpretarse como garantía de los datos de futuras ejecuciones.
+| Fuente | Ubicación / carga | Grano y campos relevantes | Limitaciones identificadas |
+|---|---|---|---|
+| Grammy | `data/raw/the_grammy_awards.csv`; se prepara y carga en PostgreSQL como `workshop2.public.grammys`, y luego se extrae a un lote CSV. | Un registro por fila de la fuente. Campos: `year`, `category`, `nominee`, `artist`, `winner`, `title`. | En el lote perfilado: 4.809 filas; `artist` nulo en 1.840 (38,26 %); todas las filas tienen `winner = TRUE`. |
+| Spotify | `data/raw/spotify_dataset.csv`; el DAG valida y normaliza un CSV. | Una observación por canción-género. Campos principales: `track_id`, `artists`, `track_genre`, `popularity`, `energy`, `valence`, `danceability`. | 114.000 filas originales, 114 géneros y 450 copias excedentes en 444 claves `(track_id, track_genre)`. `artists` puede contener varios nombres separados por `;`. |
 
-| Aspecto | Premios Grammy | Catálogo Spotify |
+Los archivos originales se conservan sin modificaciones. Los conteos corresponden a los lotes perfilados y deben volver a comprobarse en cada ejecución.
+
+## 4. Hallazgos del perfilado y riesgos de calidad
+
+| Hallazgo del perfilado | Riesgo analítico | Tratamiento / control |
 |---|---|---|
-| **Structure** | 4.809 filas y 10 columnas: `year`, `title`, `published_at`, `updated_at`, `category`, `nominee`, `artist`, `workers`, `img`, `winner`. Campos usados por los requerimientos: `year`, `category`, `nominee`, `artist`, `winner`, `title`. | 114.000 filas y 20 campos de negocio, además de una columna inicial sin nombre que corresponde a un índice exportado. Campos usados: `track_id`, `artists`, `track_genre`, `popularity`, `energy`, `valence`, `danceability`. |
-| **Completeness** | `artist`: 1.840 nulos (38,26 %); `nominee`: 6 (0,12 %); `workers`: 2.190 (45,54 %); `img`: 1.367 (28,40 %). Los campos `year`, `category` y `winner` no tenían nulos en el lote perfilado. La ausencia de `artist` impide atribuir esos registros a una persona; no se infiere el artista desde `nominee`. | `artists`, `album_name` y `track_name`: un nulo cada uno. Los campos requeridos para R2 y R3 (género, popularidad y créditos de artista usados para R1/R3/R4) deben comprobarse en cada gate; `popularity`, `energy`, `valence` y `danceability` no tenían nulos en el perfilado. |
-| **Uniqueness and duplication** | No se confirmó una clave natural estable de fila. La repetición de años, categorías y artistas es esperada por el grano. Se observaron 1.658 formas exactas de nombre no nulas; mayúsculas/espacios normalizados consolidan variantes textuales, pero no validan identidad personal. | El grano requerido por la fuente es canción-género; `track_id` por sí solo no es único en las observaciones. El archivo presentaba 450 copias excedentes dentro de 444 claves repetidas de canción-género; las copias eran concordantes en los demás atributos. En la versión perfilada, 16.299 canciones aparecen en varios géneros. |
-| **Categorical content** | 638 categorías; las más frecuentes fueron `Song Of The Year` (70), `Record Of The Year` (68) y `Album Of The Year` (66). `winner` solo contenía `TRUE` en las 4.809 filas; la fuente no permite observar ganadores y no ganadores conjuntamente. | 114 géneros, cada uno con 1.000 filas en el CSV original. `popularity` estaba en `[0,100]`; `energy`, `valence` y `danceability` en `[0,1]`. Para 720 canciones, `popularity` varía entre observaciones de género; la columna inicial sin nombre es un índice técnico, no una variable analítica. |
-| **Evidence-based risks** | La alta proporción de artista faltante reduce el conjunto atribuible para cruces. La fuente ganadora solamente impide medir nominaciones completas y comparar ganadores con nominados no ganadores. La normalización nominal puede unir homónimos y no detecta alias. | Repeticiones de canción-género pueden inflar agregados; la expansión por artista puede volver a multiplicar las métricas si no se deduplican canción-género o artista-canción. La variación de popularidad entre géneros para una misma canción exige consolidar primero a nivel canción; `artists` multivaluado se expande para cruzar artistas, conservando una fila por crédito. |
+| Grammy: 1.840 valores `artist` nulos (38,26 %); `nominee` tiene 6 nulos. | Los registros sin artista no pueden atribuirse de forma confiable a una persona. | Conservar el registro y permitir `artist_sk` nulo; no inferir el artista desde `nominee` ni `workers`. Excluirlo de KPI por artista. |
+| Grammy: 4.809 filas, 638 categorías; `winner = TRUE` en todas. | No se puede comparar ganadores con no ganadores ni calcular una tasa de éxito entre nominaciones completas. | Interpretar los resultados como registros ganadores observados en esta fuente. Emitir advertencia de cobertura. |
+| Spotify: 114.000 filas; 450 copias excedentes en 444 claves canción-género. | La duplicación puede sobreponderar canciones y alterar promedios. | Reducir repeticiones concordantes a una fila por clave. Si hay valores contradictorios, bloquear el lote. |
+| Spotify: 16.299 canciones aparecen en varios géneros; para 720 canciones cambia la popularidad entre observaciones de género. | La expansión por género o artista puede multiplicar medidas. | Reagrupar al grano requerido antes de calcular cada KPI. Para R4, usar la media aritmética de popularidad por canción entre los géneros observados. |
+| Spotify: 114 géneros, 1.000 filas por género en el archivo original; `popularity` en `[0,100]`; `energy`, `valence` y `danceability` en `[0,1]`. | Valores fuera de dominio pueden invalidar las métricas. | Validar tipos, completitud y rangos en cada lote. No recortar ni inventar valores. |
+| La normalización de nombres no verifica identidad real. | Homónimos pueden unirse incorrectamente y los alias pueden quedar separados. | Coincidencia nominal exacta tras normalización; documentar la incertidumbre. |
 
-**Tratamiento:** se preservan los archivos originales. Las copias concordantes de las claves canción-género se reducen a una observación; si hay valores contradictorios, la gate bloquea el lote. No se envían registros a cuarentena. Los errores estructurales, campos analíticos requeridos ausentes o referencias huérfanas también detienen la carga.
+**Política de excepciones:** falla rápida (*fail-fast*). No se descartan silenciosamente filas ni se publica una carga parcial. No hay cuarentena implementada. Las copias concordantes se deduplican por una regla explícita; duplicados contradictorios, errores estructurales, dominios inválidos y claves foráneas huérfanas bloquean el flujo.
 
-## 5. Propuesta del almacén dimensional
+## 5. Arquitectura de la tubería de datos
 
-### 5.1 Grano y hechos
+```mermaid
+flowchart TD
+    A[Fuente Grammy CSV] --> B[Preparar / cargar fuente PostgreSQL]
+    B --> C[Extraer lote Grammy]
+    C --> D[Great Expectations: compuerta raw Grammy]
+    E[Fuente Spotify CSV] --> F[Normalizar y perfilar lote Spotify]
+    F --> G[Great Expectations: compuerta raw Spotify]
+    D --> H[Transformación e integración]
+    G --> H
+    H --> I[Seis tablas curadas CSV]
+    I --> J[Great Expectations: compuerta curada]
+    J --> K[Verificar hashes SHA-256 aprobados]
+    K --> L[Carga a Data Warehouse PostgreSQL]
+    L --> M[Consultas analíticas R1–R4]
+    M --> N[Tablero de Control / Dashboard] 
+```
 
-| Tabla de hechos | Grano de una fila | Medidas y uso |
+**Principio de control:** ninguna transformación debe continuar si falla una compuerta *raw*; ninguna carga debe ejecutarse si falla la compuerta curada o si los archivos cambian después de validarse.
+
+## 6. Riesgos de calidad y reglas de validación (Great Expectations)
+
+En cumplimiento de los requerimientos de ingeniería de datos y la sección 6.5 del taller, el pipeline implementa validaciones automáticas con **Great Expectations (v1.24.0)** en tres etapas clave: **Spotify Raw**, **Grammy Raw** y **Data Warehouse Curado**. 
+
+Para cada conjunto de datos se validan rigurosamente tres aspectos: **columnas requeridas**, **valores permitidos / dominios** y **filas repetidas / unicidad del grano**.
+
+La especificación técnica completa y la justificación basada en perfilado se encuentra en [`docs/quality_rules.md`](./docs/quality_rules.md).
+
+### Matriz de Reglas de Calidad por Conjunto de Datos
+
+| ID de Regla | Conjunto de Datos / Capa | Qué se revisa | Qué se considera aceptable | Qué tan grave es si falla (Severidad / Política) | Requerimiento Protegido |
+|---|---|---|---|---|---|
+| **R-SPOT-01-COLS** | Spotify Crudo (*Raw*) | Presencia de las columnas obligatorias: `track_id`, `track_genre`, `popularity`, `duration_ms`, `danceability`, `energy`, `valence`, `artists`, `track_name`, `album_name`. | 100% de columnas requeridas presentes en el lote (0 faltantes). | **Crítica:** detiene el pipeline de inmediato (*fail-fast*). Impide transformaciones fallidas por ausencia de campos. | R1, R2, R3, R4 |
+| **R-SPOT-02-VALS** | Spotify Crudo (*Raw*) | Dominios y completitud: `popularity` en $[0, 100]$; `danceability`, `energy`, `valence` en $[0.0, 1.0]$; `track_id` y `track_genre` no nulos ni vacíos. | Cero valores fuera de rango o nulos en identificadores y géneros (0.0% de error). | **Alta:** bloquea el lote (*fail-fast*). Prohibida la imputación de valores para no distorsionar promedios. | R2, R4 |
+| **R-SPOT-03-DUPS** | Spotify Crudo / Preparado | Filas repetidas en el grano `(track_id, track_genre)`. Detección de duplicados concordantes vs contradictorios. | En crudo: duplicados idénticos se reducen a 1 fila (113.550 filas). En normalizado: 100% unicidad estricta en el grano. Cero duplicados contradictorios. | **Crítica:** bloquea si hay conflicto de atributos; advierte y deduplica si son idénticos. Evita sobreponderar canciones. | R2, R4 |
+| **R-GRAM-01-COLS** | Grammy Crudo (PostgreSQL) | Esquema exacto de las 10 columnas extraídas: `year`, `title`, `published_at`, `updated_at`, `category`, `nominee`, `artist`, `workers`, `img`, `winner`. | Coincidencia exacta del conjunto de 10 columnas (0 diferencias). | **Crítica:** detiene el pipeline. Falla contractualmente si cambia la tabla relacional de origen. | R1, R3 |
+| **R-GRAM-02-VALS** | Grammy Crudo (PostgreSQL) | `year` numérico en $[1900, 2026]$; `category`, `year`, `winner` no nulos; `winner` interpretable como booleano; monitoreo de `artist` nulo. | 100% no-nulos en campos clave. Se tolera $\le 40\%$ de nulos en `artist` (38.26% identificado en perfilado). | **Crítica** en `year`/`category`/`winner`; **Advertencia** en nulos de `artist` (se preservan con `artist_sk = NULL`). | R1, R3, R4 |
+| **R-GRAM-03-DUPS** | Grammy Crudo (PostgreSQL) | Unicidad de los registros de premiación; ausencia de filas redundantes en la tupla `(year, category, nominee, title, artist)`. | Cero filas duplicadas (100% registros únicos en el lote). | **Alta:** bloquea la tubería. Evita inflar artificialmente la medida `award_count`. | R1, R3 |
+| **R-CUR-01-COLS** | Almacén Curado (Data Warehouse) | Esquema y materialización de las 6 tablas (`dim_date`, `dim_artist`, `dim_cancion`, `dim_genero`, `fact_music_award`, `fact_spotify_artist_track_genre`). | Las 6 tablas existen, tienen filas ($> 0$) y coinciden exactamente con el esquema estrella. | **Crítica:** no cargar al Data Warehouse en PostgreSQL. | R1, R2, R3, R4 |
+| **R-CUR-02-VALS** | Almacén Curado (Data Warehouse) | Integridad referencial (claves foráneas sin huérfanos), `award_count = 1`, `winner` booleano, y consistencia matemática de `decade`. | Cero claves huérfanas (100% integridad referencial), 100% medidas en rango y recuentos unitarios. | **Crítica:** bloquea la carga transaccional para evitar fallos de claves foráneas o medidas erróneas. | R1, R2, R3, R4 |
+| **R-CUR-03-DUPS** | Almacén Curado (Data Warehouse) | Unicidad estricta de claves primarias sustitutas en las 6 tablas, unicidad de claves de negocio normalizadas y unicidad del grano `(track_sk, artist_sk, genre_sk)`. | Cero duplicados en claves primarias, claves de negocio y grano analítico (100% de unicidad). | **Crítica:** bloquea la carga. Evita duplicación de hechos o errores de clave primaria en base de datos. | R1, R2, R3, R4 |
+
+### Compuerta curada obligatoria
+
+La suite `curated_warehouse_suite`, ejecutada mediante `gx.curated_validation.run_validation`, valida de forma multi-asset las seis tablas de `data/transform` antes de invocar `load_curated_warehouse`:
+- Escribe el reporte de auditoría `data/transform/curated_validation_report.json`.
+- El DAG en Airflow computa huellas SHA-256 antes y después de la validación; el cargador verifica que la suite haya pasado sin fallas bloqueantes y que los hashes aprobados no hayan sufrido modificaciones (*data tampering prevention*).
+- Si se detecta una clave huérfana o un grano duplicado, se produce una excepción `QualityGateFailure` que cancela la carga a PostgreSQL sin publicar un estado parcial.
+
+## 7. Estrategia de transformación e integración
+
+| Transformación | Regla aplicada | Manejo de excepciones e impacto |
 |---|---|---|
-| `fact_music_award` | Un registro Grammy observado en la fuente. | `award_count = 1`, para sumar registros observados por año o categoría. `winner` se conserva como atributo de contexto del registro. |
-| `fact_spotify_artist_track_genre` | Un crédito de artista para una canción y un género: canción-artista-género. Una canción con *n* artistas produce *n* filas por cada género observado. Si no hay artista identificable, se conserva una fila con `artist_sk` nulo. | `popularity`, `energy`, `valence`, `danceability`. Son medidas Spotify replicadas por artista acreditado: antes de promediar por género se reduce a canción-género; para R4, primero se promedia la popularidad observada entre géneros por canción y después se reduce a artista-canción. |
+| Preparación Grammy | Verificar encabezado y número de campos; quitar espacios externos; validar año y título; normalizar `winner` a booleano. | Filas con estructura incorrecta, año no interpretable o título vacío no se cargan a la fuente. Valores `winner` desconocidos hacen fallar la compuerta. El original no se sobrescribe. |
+| Preparación Spotify | Retirar la columna inicial sin nombre solo si se confirma que es un índice secuencial; convertir métricas a tipos numéricos y normalizar identificadores y géneros. | Columna inesperada, índice no secuencial, métricas no numéricas o fuera de dominio: error o compuerta fallida. No inventar valores. |
+| Duplicados Spotify | Grano de origen `(track_id, track_genre)`; colapsar solo repeticiones concordantes. | Si una clave repetida presenta valores distintos en otros campos, bloquear el lote. Evita sobreponderar R2–R4. |
+| Artistas compartidos | Separar `artists` por `;`; quitar espacios externos, colapsar espacios repetidos y aplicar `casefold`; unir nombres normalizados en `dim_artist`. | No resolver alias, puntuación, acentos ni homónimos con una autoridad externa. Nombres vacíos o no coincidentes conservan clave nula o quedan separados. |
+| Hecho Grammy | Convertir `year` a entero, crear `dim_date` por año y derivar `decade = floor(year / 10) * 10`. Cada fila válida produce `award_count = 1`. | La compuerta bloquea año, categoría o ganador inválidos; no se sustituyen. Se conserva una fila por registro válido de origen. |
+| Hecho Spotify | Crear dimensiones de canción y género; expandir cada observación canción-género a sus artistas distintos. Grano final: canción-artista-género. | Canciones con varios artistas producen una fila por crédito. Artista puede ser nulo. Se eliminan combinaciones repetidas y se valida la unicidad del grano. |
+| Popularidad para R4 | Promediar la popularidad de una canción entre los géneros observados; luego deduplicar artista-canción. | Evita seleccionar arbitrariamente un género y evita multiplicar una canción por el número de géneros o créditos. |
 
-Los dos hechos tienen granos diferentes porque representan fenómenos diferentes. Se integran con `dim_artist`; no se hace un join directo entre cada fila Grammy y cada fila de canción, lo que multiplicaría medidas.
+### Contrato de integración
 
-### 5.2 Dimensiones, claves y preguntas que responden
+| Elemento | Decisión |
+|---|---|
+| Clave de integración | `artist_name_normalized`, convertida a la clave sustituta común `artist_sk`. |
+| Normalización | Recortar espacios externos, colapsar espacios internos repetidos y comparar sin distinguir mayúsculas/minúsculas. Separar primero los créditos Spotify por `;`. |
+| Cardinalidad | Un nombre normalizado corresponde a una fila de `dim_artist`. Un registro Grammy se asocia con cero o un artista; una observación canción-género puede producir varios créditos de artista. |
+| No coincidencias | Las claves de artista nulas se reportan como advertencias y se excluyen de KPI por artista. No se infieren identidades. |
+| Control de duplicados | Unicidad de `artist_name_normalized` y del grano `(track_sk, artist_sk, genre_sk)`. |
+| Límite | La coincidencia textual no prueba identidad personal; no se detectan automáticamente alias ni homónimos. |
 
-| Dimensión | Claves y atributos | Preguntas que habilita |
-|---|---|---|
-| `dim_date` | `date_sk` (PK sustituta), `year` (clave de negocio única), `decade` (derivada). | Evolución de registros Grammy por año y agrupación temporal. Spotify no dispone de una fecha comparable en el conjunto usado. |
-| `dim_artist` | `artist_sk` (PK sustituta), `artist_name`, `artist_name_normalized` (clave de negocio única). Se construye con nombres Grammy y créditos Spotify normalizados. | Porcentaje de artistas Spotify con un registro Grammy ganador; géneros asociados a artistas Grammy; comparación de popularidad con/sin registro ganador. |
-| `dim_cancion` | `track_sk` (PK sustituta), `track_id` (clave de negocio única), `track_name`, `album_name`, `artists`, `duration_ms`, `explicit`. | Descripción y deduplicación de canciones Spotify. `artists` conserva el campo de origen, mientras que los créditos individuales se modelan en el hecho Spotify. |
-| `dim_genero` | `genre_sk` (PK sustituta), `genre_name` (clave de negocio, derivada de `track_genre`). | Popularidad media por género y conteo de registros Grammy observados asociados a sus artistas. |
+## 8. Modelo dimensional
 
+El almacén analítico se implementa bajo un esquema en estrella multievento (constelación de hechos) en PostgreSQL (`workshop2.public`). Ambas fuentes convergen a través de la dimensión compartida conforme `dim_artist`, permitiendo responder los requerimientos analíticos sin forzar una unión directa fila a fila que multiplicaría medidas espuriamente.
 
-### 5.3 Claves, relaciones y estrategia de integración
+---
 
-Las claves sustitutas se generan en la transformación a partir de listas ordenadas. Son reproducibles para el mismo conjunto de entrada, pero no se consideran persistentes entre lotes distintos si cambia el contenido. Las claves de negocio se conservan para deduplicación y trazabilidad; no se sustituye el identificador de origen `track_id`.
+### Diagrama del modelo dimensional (Hechos vs Dimensiones)
 
-| Hecho | Clave primaria | Claves foráneas / unicidad de grano |
-|---|---|---|
-| `fact_music_award` | `music_award_sk`, una clave técnica por registro de origen. | `date_sk` → `dim_date.date_sk`; `artist_sk` → `dim_artist.artist_sk` (nullable cuando falta una atribución); los atributos `category`, `nominee`, `title`, `winner` se guardan en el propio hecho. |
-| `fact_spotify_artist_track_genre` | `spotify_credit_sk`, una clave sustituta por crédito. | `track_sk` → `dim_cancion.track_sk`; `artist_sk` → `dim_artist.artist_sk` (nullable si no se encuentra crédito); `genre_sk` → `dim_genero.genre_sk`. GX verifica la unicidad del grano `(track_sk, artist_sk, genre_sk)`. |
+A continuación se presenta la separación estructural del modelo, ubicando en un bloque las **Dimensiones** (entidades de contexto) y en el otro los **Hechos** (eventos numéricos transaccionales), junto con sus atributos y claves:
+
+```mermaid
+flowchart LR
+    %% Subgrafo de Dimensiones
+    subgraph Dimensiones ["CAPA DE DIMENSIONES (Contexto Descriptivo)"]
+        direction TB
+        D_DATE["<b>dim_date</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 date_sk: BIGINT (PK)<br/>📅 year: INT (UK)<br/>📊 decade: INT"]
+        D_ARTIST["<b>dim_artist</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 artist_sk: BIGINT (PK)<br/>👤 artist_name: TEXT<br/>🏷️ artist_name_normalized: TEXT (UK)"]
+        D_CANCION["<b>dim_cancion</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 track_sk: BIGINT (PK)<br/>🎵 track_id: TEXT (UK)<br/>💿 track_name: TEXT<br/>📁 album_name: TEXT<br/>👥 artists: TEXT<br/>⏱️ duration_ms: BIGINT<br/>🔞 explicit: BOOLEAN"]
+        D_GENERO["<b>dim_genero</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 genre_sk: BIGINT (PK)<br/>🎸 genre_name: TEXT (UK)"]
+    end
+
+    %% Subgrafo de Hechos
+    subgraph Hechos ["CAPA DE HECHOS / FACTS (Eventos y Métricas)"]
+        direction TB
+        F_AWARD["<b>fact_music_award</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 music_award_sk: BIGINT (PK)<br/>🔗 date_sk: BIGINT (FK)<br/>🔗 artist_sk: BIGINT (FK, nulo)<br/>🏆 category: TEXT<br/>⭐ nominee: TEXT<br/>📜 title: TEXT<br/>✔️ winner: BOOLEAN<br/>📈 award_count: INT (= 1)"]
+        F_SPOTIFY["<b>fact_spotify_artist_track_genre</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 spotify_credit_sk: BIGINT (PK)<br/>🔗 track_sk: BIGINT (FK)<br/>🔗 artist_sk: BIGINT (FK, nulo)<br/>🔗 genre_sk: BIGINT (FK)<br/>🔥 popularity: SMALLINT [0,100]<br/>💃 danceability: FLOAT [0,1]<br/>⚡ energy: FLOAT [0,1]<br/>✨ valence: FLOAT [0,1]"]
+    end
+
+    %% Relaciones foráneas desde Hechos hacia Dimensiones
+    F_AWARD -->|date_sk| D_DATE
+    F_AWARD -->|artist_sk (opcional)| D_ARTIST
+    F_SPOTIFY -->|artist_sk (opcional)| D_ARTIST
+    F_SPOTIFY -->|track_sk| D_CANCION
+    F_SPOTIFY -->|genre_sk| D_GENERO
+```
+
+#### Diagrama de Entidad-Relación Detallado (ERD)
 
 ```mermaid
 erDiagram
     DIM_DATE ||--o{ FACT_MUSIC_AWARD : "date_sk"
-    DIM_ARTIST o|--o{ FACT_MUSIC_AWARD : "artist_sk nullable"
-    DIM_ARTIST o|--o{ FACT_SPOTIFY_ARTIST_TRACK_GENRE : "artist_sk nullable"
+    DIM_ARTIST o|--o{ FACT_MUSIC_AWARD : "artist_sk (nulo si es premio a obra)"
+    DIM_ARTIST o|--o{ FACT_SPOTIFY_ARTIST_TRACK_GENRE : "artist_sk (nulo si no atribuible)"
     DIM_CANCION ||--o{ FACT_SPOTIFY_ARTIST_TRACK_GENRE : "track_sk"
     DIM_GENERO ||--o{ FACT_SPOTIFY_ARTIST_TRACK_GENRE : "genre_sk"
 
     DIM_DATE {
-        int date_sk PK
-        int year UK
-        int decade
+        bigint date_sk PK "Clave sustituta de fecha"
+        int year UK "Año calendario (1958-2019)"
+        int decade "Década calculada (year // 10) * 10"
     }
+
     DIM_ARTIST {
-        int artist_sk PK
-        string artist_name
-        string artist_name_normalized UK
+        bigint artist_sk PK "Clave sustituta de artista"
+        text artist_name "Nombre legible de la fuente"
+        text artist_name_normalized UK "Nombre normalizado (casefold, sin espacios extra)"
     }
+
     DIM_CANCION {
-        int track_sk PK
-        string track_id UK
-        string track_name
-        string album_name
-        string artists
-        int duration_ms
-        boolean explicit
+        bigint track_sk PK "Clave sustituta de canción"
+        text track_id UK "Identificador unívoco Spotify"
+        text track_name "Título de la canción"
+        text album_name "Nombre del álbum"
+        text artists "Texto original de créditos"
+        bigint duration_ms "Duración en milisegundos"
+        boolean explicit "Contenido explícito"
     }
+
     DIM_GENERO {
-        int genre_sk PK
-        string genre_name UK
+        bigint genre_sk PK "Clave sustituta de género"
+        text genre_name UK "Etiqueta única de género Spotify"
     }
+
     FACT_MUSIC_AWARD {
-        int music_award_sk PK
-        int date_sk FK
-        int artist_sk FK
-        string category
-        string nominee
-        string title
-        boolean winner
-        int award_count
+        bigint music_award_sk PK "Clave sustituta del premio"
+        bigint date_sk FK "Referencia a dim_date"
+        bigint artist_sk FK "Referencia a dim_artist (nullable)"
+        text category "Categoría oficial Grammy"
+        text nominee "Persona u obra nominada"
+        text title "Título del álbum/pista premiada"
+        boolean winner "Indicador de victoria (TRUE)"
+        int award_count "Medida unitaria CHECK(award_count=1)"
     }
+
     FACT_SPOTIFY_ARTIST_TRACK_GENRE {
-        int spotify_credit_sk PK
-        int track_sk FK
-        int artist_sk FK
-        int genre_sk FK
-        int popularity
-        float energy
-        float valence
-        float danceability
+        bigint spotify_credit_sk PK "Clave sustituta de crédito"
+        bigint track_sk FK "Referencia a dim_cancion"
+        bigint artist_sk FK "Referencia a dim_artist (nullable)"
+        bigint genre_sk FK "Referencia a dim_genero"
+        smallint popularity "Popularidad [0, 100]"
+        float danceability "Bailabilidad [0.0, 1.0]"
+        float energy "Energía sonora [0.0, 1.0]"
+        float valence "Valencia / positividad [0.0, 1.0]"
     }
 ```
 
-La integración ocurre antes de generar los dos hechos. La transformación extrae nombres de `grammys.artist` y separa los créditos `spotify.artists` por `;`; aplica la misma normalización y genera una única `dim_artist`. Ambas transformaciones resuelven `artist_sk` contra esa dimensión. Así se puede cruzar las fuentes por igualdad de clave sustituta sin emparejar filas de hechos. La normalización textual puede producir falsos emparejamientos de homónimos y no resuelve artistas con alias diferentes; estos resultados deben interpretarse como coincidencias nominales.
+---
 
-### 5.4 Trazabilidad de los requerimientos
+### Catálogo detallado de atributos por tabla
 
-| Requerimiento | Tablas y cálculo |
-|---|---|
-| R1 — porcentaje de artistas Spotify con Grammy ganador observado | Artistas distintos no nulos del hecho Spotify como denominador; artistas distintos con `winner = TRUE` en `fact_music_award` como numerador; unir por `artist_sk`. |
-| R2 — popularidad promedio por género | Consolidar el hecho Spotify a una fila por `(genre_sk, track_sk)` y después calcular `AVG(popularity)` por género. |
-| R3 — Top 5 de géneros según registros Grammy ganadores observados de sus artistas | Obtener pares distintos `(genre_sk, artist_sk)` desde Spotify, unir a los registros Grammy `winner = TRUE` y sumar `award_count` por género. |
-| R4 — popularidad promedio por condición Grammy | Consolidar a canción-género, promediar esos valores por canción, reducir a artista-canción, calcular primero la media por artista, clasificar según existencia de registro ganador y promediar las medias de artistas en cada grupo. |
+#### 1. Tablas de Dimensiones (Contexto Analítico)
 
-Las consultas ejecutables están en [`sql/analytical_queries.sql`](./sql/analytical_queries.sql).
+##### A. `dim_date` (Dimensión Temporal)
+- **Propósito:** Contexto temporal de premiaciones Grammy.
+- **Grano:** Un año calendario observado en las ediciones Grammy.
 
-## 6. Reglas de calidad y carga
-
-Las gates de calidad raw para Grammy y Spotify, y la gate curada, aplican exactamente tres reglas cada una. Las reglas bloqueantes detienen la ejecución antes de la carga; no se descartan silenciosamente filas ni se genera cuarentena.
-
-| ID | Regla | Métrica / umbral | Severidad y acción |
+| Atributo | Tipo de Dato (PostgreSQL) | Restricción | Descripción analítica |
 |---|---|---|---|
-| GX01 | Estructura y esquema | 100 % de campos requeridos presentes en raw; columnas exactas, seis tablas curadas no vacías y claves primarias válidas en el modelo curado. | Crítica: bloquear el lote y reportar discrepancias. |
-| GX02 | Completitud, dominios y métricas analíticas | Cero valores inválidos en los campos requeridos. Grammy: año en el rango permitido, categoría y ganador válidos. Spotify: popularidad `[0,100]`; `energy`, `valence`, `danceability` `[0,1]`. Curado: década consistente y medidas dentro de dominio. | Alta: bloquear el lote completo. `artist_sk` puede ser nulo conforme a las limitaciones perfiladas; no se crea un artista ficticio. |
-| GX03 | Grano e integridad relacional | Cero duplicados contradictorios en canción-género raw, cero duplicados no resueltos en el grano canción-artista-género curado y cero referencias foráneas huérfanas. | Alta: bloquear. Las repeticiones concordantes canción-género se normalizan antes de transformar; no se genera cuarentena. |
+| `date_sk` | `BIGINT` | `PRIMARY KEY` | Clave sustituta determinista generada en orden ascendente de años. |
+| `year` | `INTEGER` | `NOT NULL, UNIQUE` | Año calendario de la edición de entrega del premio Grammy ($1958 - 2019$). |
+| `decade` | `INTEGER` | `NOT NULL` | Década analítica calculada mediante `(year // 10) * 10`. |
 
-El detalle del conteo aprobado/reprobado y las advertencias de cada regla se persiste en informes JSON por lote. La fuente Grammy genera una advertencia de cobertura si no contiene ambos resultados de `winner`.
+##### B. `dim_artist` (Dimensión Conforme de Artista)
+- **Propósito:** Entidad puente que integra artistas de Spotify con registros de premios Grammy.
+- **Grano:** Un artista único normalizado.
 
-## 7. Airflow DAG design
+| Atributo | Tipo de Dato (PostgreSQL) | Restricción | Descripción analítica |
+|---|---|---|---|
+| `artist_sk` | `BIGINT` | `PRIMARY KEY` | Clave sustituta determinista común compartida entre ambas fuentes. |
+| `artist_name` | `TEXT` | `NOT NULL` | Nombre legible y representativo del artista extraído de las fuentes. |
+| `artist_name_normalized` | `TEXT` | `NOT NULL, UNIQUE` | Nombre normalizado (espacios recortados, colapsados y en minúsculas `casefold`) para coincidencia exacta determinista. |
 
-El DAG `grammys_spotify_data_quality` usa dos ramas de entrada que convergen en la transformación. Solo después de validar el modelo curado se carga el almacén.
+##### C. `dim_cancion` (Dimensión Canción)
+- **Propósito:** Catálogo descriptivo y deduplicación de canciones de Spotify.
+- **Grano:** Una canción única identificada por su `track_id`.
+
+| Atributo | Tipo de Dato (PostgreSQL) | Restricción | Descripción analítica |
+|---|---|---|---|
+| `track_sk` | `BIGINT` | `PRIMARY KEY` | Clave sustituta determinista de la canción. |
+| `track_id` | `TEXT` | `NOT NULL, UNIQUE` | Identificador alfanumérico único natural de Spotify. |
+| `track_name` | `TEXT` | `NULLABLE` | Título de la pista musical. |
+| `album_name` | `TEXT` | `NULLABLE` | Nombre del álbum de lanzamiento. |
+| `artists` | `TEXT` | `NULLABLE` | Cadena original completa de créditos de artistas (separados por `;`). |
+| `duration_ms` | `BIGINT` | `NULLABLE` | Duración de la canción en milisegundos. |
+| `explicit` | `BOOLEAN` | `NULLABLE` | Indicador booleano de contenido explícito. |
+
+##### D. `dim_genero` (Dimensión Género Musical)
+- **Propósito:** Clasificación temática de canciones para agregación analítica.
+- **Grano:** Un género musical único de Spotify (114 géneros observados).
+
+| Atributo | Tipo de Dato (PostgreSQL) | Restricción | Descripción analítica |
+|---|---|---|---|
+| `genre_sk` | `BIGINT` | `PRIMARY KEY` | Clave sustituta determinista del género musical. |
+| `genre_name` | `TEXT` | `NOT NULL, UNIQUE` | Nombre estandarizado del género musical en Spotify. |
+
+---
+
+#### 2. Tablas de Hechos (Facts)
+
+##### A. `fact_music_award` (Hechos de Premiaciones Grammy)
+- **Proceso de negocio:** Registro histórico de premios y nominaciones Grammy.
+- **Grano de la tabla:** Un registro individual de premiación observado en la fuente Grammy.
+- **Regla de integridad:** `award_count = 1` en cada fila. No se infiere identidad si el artista es nulo.
+
+| Atributo | Tipo de Dato (PostgreSQL) | Restricción | Rol y Descripción |
+|---|---|---|---|
+| `music_award_sk` | `BIGINT` | `PRIMARY KEY` | Clave sustituta única del evento de premiación. |
+| `date_sk` | `BIGINT` | `NOT NULL, FK -> dim_date(date_sk)` | Clave foránea temporal hacia el año de premiación. |
+| `artist_sk` | `BIGINT` | `NULLABLE, FK -> dim_artist(artist_sk)` | Clave foránea al artista premiado. Nulo cuando el premio reconoce un álbum, composición o categoría institucional sin artista unívoco. |
+| `category` | `TEXT` | `NOT NULL` | Categoría oficial de premiación otorgada por The Recording Academy. |
+| `nominee` | `TEXT` | `NULLABLE` | Persona, álbum, composición o proyecto nominado. |
+| `title` | `TEXT` | `NULLABLE` | Título del trabajo artístico galardonado. |
+| `winner` | `BOOLEAN` | `NULLABLE` | Indicador de victoria (`TRUE` en todos los registros del conjunto observado). |
+| `award_count` | `INTEGER` | `NOT NULL, CHECK (award_count = 1)` | Métrica aditiva unitaria que cuenta exactamente un registro de premiación observado. |
+
+##### B. `fact_spotify_artist_track_genre` (Hechos de Observaciones de Canciones Spotify)
+- **Proceso de negocio:** Desempeño musical, métricas acústicas y popularidad por crédito de artista.
+- **Grano de la tabla:** Un crédito de artista individual para una canción y un género musical observado (`track_sk`, `artist_sk`, `genre_sk`).
+- **Regla de integridad:** Restricción de unicidad estricta en el grano `UNIQUE (track_sk, artist_sk, genre_sk)`.
+
+| Atributo | Tipo de Dato (PostgreSQL) | Restricción | Rol y Descripción |
+|---|---|---|---|
+| `spotify_credit_sk` | `BIGINT` | `PRIMARY KEY` | Clave sustituta única del crédito individual de artista. |
+| `track_sk` | `BIGINT` | `NOT NULL, FK -> dim_cancion(track_sk)` | Clave foránea hacia la dimensión canción. |
+| `artist_sk` | `BIGINT` | `NULLABLE, FK -> dim_artist(artist_sk)` | Clave foránea hacia la dimensión de artista (nulo si no hay crédito atribuible). |
+| `genre_sk` | `BIGINT` | `NOT NULL, FK -> dim_genero(genre_sk)` | Clave foránea hacia la dimensión género musical. |
+| `popularity` | `SMALLINT` | `NOT NULL, CHECK (popularity BETWEEN 0 AND 100)` | Métrica de popularidad calculada por el algoritmo de Spotify ($0 - 100$). |
+| `danceability` | `DOUBLE PRECISION` | `NOT NULL, CHECK (danceability BETWEEN 0 AND 1)` | Métrica de idoneidad para el baile basada en tempo, ritmo y regularidad ($0.0 - 1.0$). |
+| `energy` | `DOUBLE PRECISION` | `NOT NULL, CHECK (energy BETWEEN 0 AND 1)` | Métrica perceptual de intensidad, velocidad y sonoridad ($0.0 - 1.0$). |
+| `valence` | `DOUBLE PRECISION` | `NOT NULL, CHECK (valence BETWEEN 0 AND 1)` | Métrica de positividad sonora transmitida por la canción ($0.0 - 1.0$). |
+
+---
+
+### Trazabilidad: Requerimientos Analíticos → Almacén de Datos
+
+| ID | Requerimiento Analítico | Tablas y Elementos del Data Warehouse Utilizados | Lógica de Cálculo |
+|---|---|---|---|
+| **R1** | Porcentaje de artistas Spotify con Grammy ganador observado. | `fact_spotify_artist_track_genre`, `fact_music_award`, `dim_artist`. | Cruzar artistas Spotify no nulos con artistas Grammy con `winner = TRUE` usando `artist_sk`. Numerador: `COUNT(DISTINCT artist_sk)` coincidentes. Denominador: `COUNT(DISTINCT artist_sk)` en Spotify. |
+| **R2** | Popularidad promedio y conteo de canciones por género musical. | `fact_spotify_artist_track_genre`, `dim_genero`, `dim_cancion`. | Agrupar previamente por `(genre_sk, track_sk)` tomando `MAX(popularity)` para contar cada canción una sola vez por género; unir con `dim_genero` y calcular `AVG(popularity)` y `COUNT(track_sk)`. |
+| **R3** | Top 5 géneros asociados a más premios Grammy ganadores. | `fact_spotify_artist_track_genre`, `fact_music_award`, `dim_genero`. | Deduplicar los pares `(genre_sk, artist_sk)` en Spotify; unirlos por `artist_sk` con `fact_music_award` donde `winner = TRUE`; agrupar por `genre_name` y calcular `SUM(award_count)` ordenando descendente con límite 5. |
+| **R4** | Comparación de popularidad media por artista entre ganadores y no ganadores. | `fact_spotify_artist_track_genre`, `fact_music_award`, `dim_artist`. | Para cada canción, calcular su popularidad media entre sus géneros observados; asignar esa popularidad a cada crédito `artist_sk`; promediar por artista; etiquetar si el artista tiene `winner = TRUE` en `fact_music_award`; comparar la media de las medias y el tamaño de cada grupo. |
+
+
+## 9. Diseño del flujo en Apache Airflow (DAG)
+
+DAG: `grammys_spotify_data_quality`.
+
+| Fase | Responsabilidad | Condición para avanzar |
+|---|---|---|
+| Bootstrap / extracción Grammy | Preparar la fuente PostgreSQL y extraer un lote CSV identificado. | Extracción y estructura correctas. |
+| Compuerta raw Grammy | Validar esquema, completitud, dominios y calidad del lote mediante Great Expectations. | Todas las reglas bloqueantes aprobadas (`R-GRAM-01-COLS`, `R-GRAM-02-VALS`, `R-GRAM-03-DUPS`). |
+| Preparación y compuerta raw Spotify | Normalizar el CSV y validar el grano y los dominios. | Todas las reglas bloqueantes aprobadas (`R-SPOT-01-COLS`, `R-SPOT-02-VALS`, `R-SPOT-03-DUPS`). |
+| Transformación e integración | Construir las cuatro dimensiones y los dos hechos curados. | Ambas ramas de origen aprobadas. |
+| Compuerta curada (DW) | Validar esquema, dominios, claves, integridad referencial y grano en las 6 tablas. | Expectativas bloqueantes aprobadas (`R-CUR-01-COLS`, `R-CUR-02-VALS`, `R-CUR-03-DUPS`) y hashes consistentes. |
+| Carga transaccional al DW | Reemplazar la instantánea (*snapshot*) en PostgreSQL dentro de una transacción ACID. | Compuerta curada y verificación de hashes SHA-256 aprobadas. |
+| Generación de salidas analíticas | Ejecutar las cuatro consultas de `sql/analytical_queries.sql`. | Carga en PostgreSQL confirmada. |
 
 ![Arquitectura Airflow](docs/arquitectura.png)
 
+La imagen documenta el diseño del DAG orquestador. La ejecución integrada completa se gestiona en Airflow mediante tareas desacopladas TaskFlow; una validación local aislada no sustituye la trazabilidad de una corrida *end-to-end*.
 
-El grafo separa extracción, calidad de cada fuente, transformación, calidad curada y carga. Grammy se bootstrappea antes de extraerse desde PostgreSQL; Spotify se normaliza en su gate raw. Las dos ramas deben aprobar antes de crear las seis tablas curadas. La carga verifica además los hashes de los CSV validados y reemplaza el snapshot del warehouse dentro de una transacción.
+## 10. Política de fallos y reintentos
 
-## 8. Failure and retry policy
+**Configuración actual:** `retries = 0`. No hay reintentos automáticos inmediatos para fallos de calidad de datos. El operador debe revisar el registro de ejecución (*log*) y el informe JSON, corregir la causa raíz en la fuente o en la lógica de transformación, y volver a desencadenar la tarea o el DAG según corresponda.
 
-- Las tareas tienen **cero reintentos automáticos** (`retries = 0`). Una falla requiere revisar el log/informe, corregir su causa y volver a ejecutar o reintentar manualmente la tarea apropiada.
-- Las gates GX detienen el flujo ante una falla de severidad crítica o alta; no se continúa con una carga parcial. Los errores de extracción, estructura, claves, PostgreSQL o cambios de hash también elevan una excepción y fallan la tarea.
-- Si falla la gate raw, la transformación no se ejecuta. Si falla la gate curada o la verificación de hashes, la carga no se ejecuta.
-- El reemplazo del almacén es transaccional: errores durante truncado/inserción revierten la transacción, evitando publicar una carga incompleta. Los errores persistentes de datos no se reintentan automáticamente porque repetirlos no los corregiría.
-- El esquema anterior no se renombra ni se elimina automáticamente. Si los nombres de tabla ya existen con columnas incompatibles, el cargador reporta el esquema inesperado y no intenta una migración destructiva. La limpieza de tablas históricas requiere una decisión explícita del operador.
+| Fallo posible | Detección / evidencia | Comportamiento esperado | Recuperación |
+|---|---|---|---|
+| CSV ausente, encabezado inesperado o estructura incorrecta | Error de extracción/preparación o regla `R-SPOT-01-COLS` / `R-GRAM-01-COLS`. | Detener la tarea de inmediato (*fail-fast*); no transformar ni cargar datos corruptos. | Verificar ruta, archivo y esquema de origen; corregir la causa y reejecutar la tarea. |
+| Nulos o valores fuera de dominio en campos requeridos | Regla `R-SPOT-02-VALS` / `R-GRAM-02-VALS` en informe JSON. | Bloquear el lote completo; prohibida la imputación o invención de valores para no distorsionar métricas. | Corregir el dato en la fuente controlada o resolver el problema de origen; reejecutar la compuerta. |
+| Duplicados contradictorios en canción-género | Control de consistencia y regla `R-SPOT-03-DUPS`. | No seleccionar una fila de forma arbitraria; bloquear la transformación y la carga. | Investigar los registros conflictivos y definir una regla de negocio trazable. |
+| Clave foránea huérfana o grano curado duplicado | Suite curada multiactivo (`R-CUR-02-VALS`, `R-CUR-03-DUPS`). | Excepción `QualityGateFailure`; abortar la carga transaccional. | Revisar la transformación dimensional, las claves sustitutas y la integridad de las tablas. |
+| Modificación no autorizada de CSV curados tras validación | Verificación de discrepancia en huellas SHA-256. | Rechazar el lote (*data tampering protection*); prohibido cargar archivos no auditados. | Regenerar los archivos CSV curados y repetir la suite de validación completa. |
+| Error durante la carga a PostgreSQL | Excepción de base de datos relacional. | Reversión automática de la transacción (`ROLLBACK`) para evitar cargas parciales o tablas inconsistentes. | Revisar conectividad, permisos, esquema y registros; verificar el estado del almacén antes de reintentar. |
+| Esquema destino incompatible en base de datos | Comprobación de compatibilidad del cargador. | Detener el proceso sin migraciones destructivas ni eliminación no planificada de tablas. | Revisar el esquema relacional y aplicar las migraciones DDL correspondientes de forma explícita. |
+| Reejecución con el mismo lote de datos | Manifiesto de ejecución, hashes SHA-256 y reemplazo transaccional. | Reemplazar limpiamente la instantánea (*snapshot*), garantizando idempotencia sin anexar registros duplicados. | Verificar conteos, hashes y consultas antes y después para confirmar el comportamiento de reejecución segura (*safe rerun*). |
 
-## 9. Successful execution evidence
+**Justificación técnica:** No se reintentan automáticamente fallos persistentes de calidad: repetir el procesamiento sobre los mismos datos erróneos no soluciona la causa raíz. Se configura el DAG con una única corrida activa simultánea (`max_active_runs = 1`) y se desactiva el retrollenado automático (`catchup = False`).
 
-La evidencia exitosa disponible para el diseño integrado es una validación local reproducible, no una corrida completa nueva de Airflow:
+## 11. Evidencia de ejecución exitosa
 
-| Etapa | Resultado observado |
-|---|---|
-| Grammy raw | 3/3 reglas GX aprobadas; 4.809 registros. |
-| Spotify raw | 114.000 filas de entrada; 113.550 canción-género después de retirar 450 copias concordantes; cero filas en cuarentena. |
-| Transformación y gate curada | 3/3 reglas GX aprobadas; contrato de columnas aceptado por el lector del cargador. |
-| Tablas resultantes | `dim_date` 62; `dim_artist` 30.942; `dim_cancion` 89.741; `dim_genero` 114; `fact_music_award` 4.809; `fact_spotify_artist_track_genre` 157.529. |
-| KPI preliminar R1 | 524 coincidencias de artistas ganadores observados entre 29.810 artistas Spotify atribuibles (1,76 %). |
+### Evidencia local comprobada y métricas de validación
 
-Los informes de validación por lote se escriben en `data/batches/<fuente>/<lote>/validation_report.json`; en particular, el lote Grammy `simplified-model-final-20261014T0500` registra 3/3 aprobadas y la advertencia de cobertura `winner`.
+| Etapa | Resultado documentado | Alcance de la evidencia técnica |
+|---|---|---|
+| Compuerta raw Grammy | 3 reglas de calidad formales (`R-GRAM-01-COLS`, `R-GRAM-02-VALS`, `R-GRAM-03-DUPS`), 7 expectativas nativas de GX aprobadas, 0 fallos bloqueantes, 2 advertencias informativas documentadas; 4.809 registros auditados. | Validación local automatizada con Great Expectations sobre el lote extraído. |
+| Compuerta raw Spotify | 3 reglas de calidad formales (`R-SPOT-01-COLS`, `R-SPOT-02-VALS`, `R-SPOT-03-DUPS`), 8 expectativas nativas de GX aprobadas, 0 fallos; 114.000 filas de entrada, 113.550 observaciones limpias tras deduplicación de copias idénticas. Cero filas en cuarentena. | Preparación y validación local automatizada con Great Expectations. |
+| Transformación y compuerta curada | 3 reglas multiactivo (`R-CUR-01-COLS`, `R-CUR-02-VALS`, `R-CUR-03-DUPS`), 35 expectativas nativas de GX aprobadas en las 6 tablas del DW, 0 fallos; integridad referencial sin huérfanos y contrato verificado. | Validación local multiactivo sobre todas las tablas dimensionales y de hechos generadas. |
+| Tablas curadas generadas | `dim_date`: 62 filas; `dim_artist`: 30.942 filas; `dim_cancion`: 89.741 filas; `dim_genero`: 114 filas; `fact_music_award`: 4.809 filas; `fact_spotify_artist_track_genre`: 157.529 filas. | Conteos de registros de la salida dimensional en `data/transform/`. |
+| KPI preliminar R1 | 524 coincidencias entre 29.810 artistas Spotify atribuibles (1,76 %). | Resultado preliminar por coincidencia nominal normalizada; no es identidad física verificada. |
 
-## 10. Controlled failure evidence
+## 12. Evidencia de fallos controlados
 
-El comportamiento de bloqueo está respaldado por dos evidencias:
+Para validar la efectividad de las compuertas de calidad (*quality gates*), se ejecutaron pruebas de estrés y escenarios de fallo inducido:
 
-1. Se ejecutó un ensayo local de la gate curada sobre copias temporales de las tablas, reemplazando un `genre_sk` válido por `999999999`. GX falló con `QualityGateFailure`; `curated-cross-source-relationships-and-grain` detectó 1 referencia inválida entre 24 comprobaciones, y el informe generado tuvo estado `failed`. La prueba no invocó la carga PostgreSQL ni modificó los CSV de trabajo.
-2. El informe histórico `data/batches/spotify/scheduled__2026-10-13T00_00_00_00_00/validation_report.json` registra un lote Spotify bloqueado: fallaron la unicidad canción-género (`894` inesperados), duración positiva (`1`) y tempo positivo (`157`). Es evidencia real de bloqueo de una versión previa de la gate; no debe confundirse con las tres reglas vigentes.
+| Prueba controlada | Resultado observado | Qué demuestra / Qué no demuestra |
+|---|---|---|
+| **Violación de integridad referencial en compuerta curada:** Inyección de un `genre_sk` inválido (`999999999`) en copias temporales de hechos. | Great Expectations detectó la anomalía mediante la regla `R-CUR-02-VALS-fk-genre` (`expect_column_values_to_be_in_set`), reportando 1 referencia inválida en el informe JSON y arrojando una excepción `QualityGateFailure`. El flujo bloqueó la carga y no modificó los archivos de producción. | **Demuestra:** que la compuerta curada intercepta claves foráneas huérfanas antes de la persistencia.<br/>**No demuestra:** reversión (*rollback*) en PostgreSQL ni ejecución completa en el orquestador Airflow. |
+| **Detección histórica de anomalías en Spotify:** Ejecución histórica de prueba en lote desalineado. | La compuerta detectó 894 duplicados en el grano canción-género, 1 registro con duración no positiva y 157 con tempo no positivo, deteniendo el avance del lote. | **Demuestra:** capacidad de intercepción de anomalías en etapas tempranas (*fail-fast*) ante datos no conformes. |
 
-Una prueba controlada solo valida la respuesta de GX: no cambia el CSV fuente ni escribe en PostgreSQL.
+## 13. Tablero de control (Dashboard) y salidas analíticas
 
-## 11. Repeatability strategy
+Las salidas analíticas del proyecto corresponden a los cuatro requerimientos (R1 a R4) descritos en la Sección 2, resueltos mediante consultas SQL optimizadas contra el esquema estrella en PostgreSQL ([`sql/analytical_queries.sql`](./sql/analytical_queries.sql)).
 
-- Los lotes Grammy y Spotify incluyen manifiestos con identificador de corrida, conteos y hash SHA-256. Grammy también exporta sus filas ordenadas por `source_row_number`; un lote con el mismo identificador solo se reutiliza si coinciden sus hashes.
-- El bootstrap Grammy registra hash, tamaño, archivo de origen y total de filas en `grammys_source_load`. Si cambia la fuente respecto del bootstrap ya existente, el proceso falla en vez de sobrescribirla silenciosamente.
-- Las dimensiones se construyen con claves de negocio ordenadas (año, artista normalizado, `track_id` y género), de forma que las claves sustitutas son deterministas para el mismo contenido de entrada. Las filas del hecho conservan el orden estable del lote fuente.
-- La gate curada calcula SHA-256 antes y después de validar; la carga vuelve a comparar los hashes con los aprobados por GX.
-- La carga aplica un reemplazo completo transaccional. Una repetición con las mismas fuentes genera el mismo conjunto lógico de tablas y conteos, sin anexar otra copia del snapshot.
-- Se limita el DAG a una corrida activa (`max_active_runs=1`) y se desactiva el backfill automático (`catchup=False`).
+| Salida / Requerimiento | Contenido analítico mínimo | Métrica o indicador reportado |
+|---|---|---|
+| **R1** | Porcentaje de artistas de Spotify con al menos un registro Grammy ganador observado. | Porcentaje global, numerador (artistas con Grammy) y denominador (total artistas atribuibles). |
+| **R2** | Distribución de popularidad promedio y volumen de canciones por género musical. | Popularidad promedio ponderada y conteo de canciones únicas por cada uno de los 114 géneros. |
+| **R3** | Clasificación de los cinco géneros musicales asociados a mayor volumen de premios Grammy ganadores. | Top 5 de géneros, suma total de premios observados (`award_count`) y conteo de artistas distintos asociados. |
+| **R4** | Análisis comparativo de la popularidad media entre artistas con y sin premios Grammy ganadores observados. | Media de las medias por artista para ambos grupos, brecha de popularidad y tamaño poblacional de cada segmento. |
 
-## 12. Ejecución
+## 14. Instrucciones de instalación y ejecución
 
-Con Docker Desktop activo, desde la raíz del proyecto:
+### Requisitos previos
+
+- Docker y Docker Compose instalados y activos.
+- Repositorio clonado localmente con los archivos de origen ubicados en `data/raw/`:
+  - `data/raw/the_grammy_awards.csv`
+  - `data/raw/spotify_dataset.csv`
+- Conexión al servicio de PostgreSQL configurada según el archivo `.env`.
+
+### Despliegue del entorno
+
+Desde la raíz del proyecto, en un terminal PowerShell:
 
 ```powershell
 docker compose config --quiet
 docker compose up -d --build
 ```
 
-Airflow se expone en [http://localhost:8081](http://localhost:8081). Ejecutar el DAG `grammys_spotify_data_quality`. El flujo extrae las fuentes, aplica las gates raw, construye los CSV curados, valida las seis tablas y solo entonces reemplaza transaccionalmente la instantánea del almacén PostgreSQL. La base Grammy fuente es `workshop2`; en Windows se expone PostgreSQL en `localhost:5433`, mientras que los contenedores se comunican por `postgres:5432`.
+El servidor de Apache Airflow estará accesible en [http://localhost:8080](http://localhost:8080) (credenciales por defecto: `airflow` / `airflow`).
 
-La corrida completa de Airflow para este diseño aún está pendiente. La ejecución local verificó gates y estructura; no confirmó el efecto de carga PostgreSQL ni el resultado en el DAG. Al correr el DAG, validar las cuatro consultas de [`sql/analytical_queries.sql`](./sql/analytical_queries.sql) en el almacén.
+### Ejecución del pipeline
 
-## 13. Assumptions and limitations
+1. Acceder a la interfaz web de Airflow y activar el DAG `grammys_spotify_data_quality`.
+2. Desencadenar la ejecución manual del DAG (*Trigger DAG*).
+3. Monitorear el avance secuencial de las tareas en la vista de grafo (*Graph View*).
 
-### Assumptions
+### Verificación y auditoría posterior
 
-- **Artist identity is name-based.** Grammy `artist` and individual names parsed from Spotify `artists` refer to the same artist when their normalized strings match after trimming, collapsing repeated whitespace, and case-folding. The pipeline does not consult an external artist registry.
-- **A Spotify artist credit is one distinct name in the semicolon-separated `artists` field.** A song with multiple credited artists contributes a row for each artist and each observed genre. Measures repeated by this expansion must be deduplicated or aggregated at the intended analytical grain before computing KPIs.
-- **A Grammy fact row is one source record.** `award_count = 1` counts observed rows, not a reconstructed nomination or award event. Category, nominee, title, and winner remain attributes of that record.
-- **A Grammy winner match means an observed Grammy row with `winner = TRUE`.** All 4,809 rows in the profiled batch have that value; the interpretation is therefore limited to records present in this winner-biased source.
-- **Genre-level popularity uses song-genre observations.** Each distinct song is counted once within each genre. For R4, where Spotify has different popularity values for some songs across genres, song popularity is assumed to be the arithmetic mean across that song's observed genres before artist-level aggregation.
-- **Missing or unusable artist names are not imputed.** Such records remain available in the relevant source/fact data with a null artist key, but are excluded from artist-based cross-source KPIs.
-- **The current source snapshots are the analytical population.** KPI values describe the data loaded into this project, rather than the full Spotify catalog or complete Grammy history.
+1. **Revisión de compuertas:** Confirmar que las tareas de extracción, validación raw, transformación, validación curada y carga finalizaron con estado `success`.
+2. **Auditoría de calidad:** Inspeccionar los reportes JSON generados en `data/batches/` y `data/transform/curated_validation_report.json`.
+3. **Comprobación en base de datos:** Conectarse al motor PostgreSQL y verificar los conteos de filas en las seis tablas del esquema `workshop2.public`.
+4. **Ejecución analítica:** Correr el script [`sql/analytical_queries.sql`](./sql/analytical_queries.sql) contra el Data Warehouse para obtener los resultados de R1–R4.
+5. **Reejecución segura (*Safe Rerun*):** Desencadenar nuevamente el DAG con el mismo lote para verificar la idempotencia del proceso (los conteos de registros en las tablas deben permanecer idénticos y sin duplicados).
 
-### Limitations
+> **Nota de integridad:** La ejecución completa integrada de Airflow, la carga al DW, la ejecución de las cuatro consultas y el despliegue del tablero se gestionan mediante los comandos anteriores. Asegúrese de guardar los resultados reales obtenidos de la base de datos al finalizar la corrida.
 
-- **Name matching can create false or missed links.** Homonymous artists can be incorrectly merged; aliases, name changes, punctuation differences, and alternate spellings can prevent a true match. The reported cross-source match percentage is a nominal match, not verified person-level identity.
-- **Grammy coverage is incomplete for nomination analysis.** Since the profiled source contains only `winner = TRUE`, it cannot support the total number of nominees, a win rate, or a meaningful comparison of winners against non-winning nominees. R1, R3, and R4 describe observed winners only.
-- **Artist attribution is incomplete.** `artist` is null in 1,840 of 4,809 profiled Grammy rows (38.26%). Those rows cannot contribute to artist-level joins or KPIs. The project deliberately does not infer an artist from `nominee` or `workers`.
-- **Spotify popularity is a time-sensitive catalog attribute.** The dataset does not provide a capture timestamp suitable for trend analysis, so popularity KPIs are a snapshot and cannot be interpreted as popularity evolution over time.
-- **Genres and credited artists reflect the Spotify dataset's representation.** The model does not validate that genre labels are a universal taxonomy or that every listed artist is a primary performer. A song assigned to several genres contributes to each of those genres in R2 and can associate an artist's observed Grammy records with each such genre in R3.
-- **R4 is an unweighted comparison of artist-level means.** Every artist contributes one mean regardless of catalog size. A song shared by multiple credited artists contributes once to each credited artist's mean. The result is descriptive and does not establish that Grammy recognition causes popularity differences.
-- **Surrogate keys are deterministic only for an unchanged input population and transformation.** They are generated during transformation from sorted business keys, not managed as persistent slowly changing dimensions. Adding or removing business keys can change surrogate-key assignments; facts and dimensions must therefore be refreshed together.
-- **Automated quality handling is fail-fast, not quarantine-based.** The pipeline blocks a batch when blocking expectations fail; it does not repair conflicting duplicates or publish partially accepted rows.
-- **End-to-end deployment evidence remains incomplete.** Local validation confirmed the raw and curated GX gates and the loader's CSV schema contract, but the latest integrated model has not yet been verified by a complete Airflow run, PostgreSQL warehouse load, and execution of all analytical queries.
+## 15. Supuestos y limitaciones
 
-## 14. Tecnologías
+### Supuestos del modelo y del negocio
 
-| Componente | Uso |
-|---|---|
-| Apache Airflow | Orquestación de extracción, gates, transformación y carga. |
-| Great Expectations | Validación de calidad en origen y en el modelo curado. |
-| PostgreSQL | Fuente de registros Grammy y destino del almacén. |
-| Pandas | Perfilado y transformación de los CSV. |
-| Docker Compose | Ejecución local de servicios. |
-# workshop2
+- **Normalización de nombres:** Dos artistas se consideran coincidentes si sus cadenas normalizadas son idénticas tras eliminar espacios en los extremos, colapsar espacios internos continuos y aplicar conversión a minúsculas (`casefold`).
+- **Créditos múltiples:** Cada nombre individual delimitado por `;` en la columna `artists` de Spotify se interpreta y procesa como un crédito de artista independiente.
+- **Grano de premiación:** Cada fila válida del archivo de premios Grammy representa un registro histórico observado; la métrica `award_count = 1` cuantifica dicho evento unitario.
+- **Criterio de ganador:** Un artista se clasifica como ganador si se encuentra vinculado a al menos un registro histórico de premiación con `winner = TRUE`.
+- **Agregación de popularidad:** Para el requerimiento R2, una canción se evalúa una sola vez por género. Para R4, la métrica de popularidad por canción se calcula como el promedio aritmético entre sus géneros observados.
+- **Representatividad poblacional:** Los lotes procesados representan la población analítica delimitada del proyecto, mas no el catálogo exhaustivo global de Spotify ni la totalidad histórica de los premios de la academia.
+
+### Limitaciones identificadas
+
+- **Identidad nominal:** Pueden producirse falsos positivos por homónimos y falsos negativos por variantes de grafía, acrónimos, acentos ortográficos o nombres artísticos alternativos.
+- **Cobertura de la fuente Grammy:** Los 4.809 registros del lote suministrado presentan exclusivamente `winner = TRUE`; no es viable computar tasas de conversión sobre nominaciones no premiadas.
+- **Atribución incompleta en origen:** El atributo `artist` es nulo en 1.840 registros de la fuente Grammy (38,26 %); por política de fidelidad, no se infiere la identidad a partir de campos como `nominee` o `workers`.
+- **Popularidad como instantánea (*snapshot*):** Las métricas de popularidad corresponden a una fotografía temporal sin serie cronológica asociada.
+- **Taxonomía de géneros:** Las etiquetas temáticas proceden directamente del conjunto de datos de Spotify y no están normalizadas bajo una ontología musical externa.
+- **Alcance descriptivo de R4:** Cada artista tiene el mismo peso en el promedio de medias por artista; las correlaciones observadas no implican relación causal entre la obtención de premios Grammy y la popularidad comercial.
+- **Claves sustitutas deterministas:** Las claves generadas son deterministas para la corrida actual; si se altera la población de claves de negocio, las asignaciones numéricas pueden variar, por lo que hechos y dimensiones deben sincronizarse siempre de forma integral.
+- **Política de integridad estricta:** El pipeline aplica política de falla rápida (*fail-fast*); no se corrigen duplicados con valores contradictorios ni se publican cargas parciales ante anomalías.
+- **Evidencia *end-to-end*:** Las pruebas locales confirman la lógica matemática y de validación con Great Expectations; la validación completa en el clúster Airflow y el despliegue del tablero gráfico interactivo requieren ejecución integrada en el entorno de despliegue.
+
+## 16. Tecnologías utilizadas
+
+| Tecnología / Herramienta | Versión / Componente | Propósito en la solución |
+|---|---|---|
+| **Apache Airflow** | 3.1.8 | Orquestación, secuenciación y monitoreo del flujo de tareas ETL/ELT. |
+| **Great Expectations** | 1.24.0 | Implementación de compuertas de calidad automáticas (*quality gates*) en capas raw y curada. |
+| **PostgreSQL** | 16+ | Base de datos relacional para la fuente transaccional de Grammy y el Data Warehouse dimensional. |
+| **Pandas** | 2.2+ | Perfilado, normalización, manipulación vectorial y transformaciones dimensionales. |
+| **Docker & Docker Compose** | v2+ | Contenedorización, aislamiento de servicios y reproducibilidad del entorno de ejecución. |
+| **SQL (ANSI / PL/pgSQL)** | - | Definición del esquema dimensional DDL y consultas analíticas para cálculo de KPIs (R1–R4). |
