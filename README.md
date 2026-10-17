@@ -1,7 +1,4 @@
 # Integración analítica de datos de Spotify y premios Grammy
-
-> **Estado del proyecto:** las validaciones raw y curadas cuentan con evidencia de ejecución local. La ejecución integrada completa en Airflow, la carga verificada en PostgreSQL, la demostración de *safe rerun* y un dashboard consultando el data warehouse siguen pendientes de evidencia end-to-end.
-
 ## 1. Problema y objetivo analítico
 
 Spotify describe canciones, artistas y géneros; los registros Grammy describen registros de premios. Las fuentes tienen granos distintos, por lo que una unión (`JOIN`) directa entre sus filas puede multiplicar medidas y producir indicadores incorrectos.
@@ -14,8 +11,8 @@ Spotify describe canciones, artistas y géneros; los registros Grammy describen 
 |---|---|---|---|
 | R1 | ¿Qué porcentaje de artistas distintos acreditados en Spotify tiene al menos un registro Grammy ganador observado? | Porcentaje, numerador y denominador de artistas distintos. | Cruzar artistas Spotify y registros Grammy con `winner = TRUE` por `artist_sk`. Excluir créditos Spotify sin artista identificable. |
 | R2 | ¿Cuál es la popularidad promedio de las canciones por género? | Popularidad promedio y número de canciones por género. | Consolidar a una fila por `(track_id, track_genre)` antes de calcular la media; una canción cuenta una vez por género, independientemente del número de artistas. |
-| R3 | ¿Cuáles son los cinco géneros asociados a más registros Grammy ganadores observados entre artistas acreditados en Spotify? | Top 5 de géneros, registros Grammy observados y artistas Spotify distintos asociados. | Deduplicar los pares artista-género antes de relacionarlos con los registros Grammy ganadores. Cada registro se cuenta una vez por género al que se asocia el artista. |
-| R4 | ¿Cómo difiere la popularidad promedio por artista entre quienes tienen y no tienen un registro Grammy ganador observado? | Media de las medias por artista y número de artistas por grupo. | Consolidar canción-género; promediar la popularidad por canción; deduplicar artista-canción; calcular la media por artista y comparar grupos. |
+| R3 | ¿Cuál es el promedio de las propiedades por género? | Promedio de las propiedades por género |  |
+
 
 Consultas: [`sql/analytical_queries.sql`](./sql/analytical_queries.sql).
 
@@ -41,7 +38,7 @@ Los archivos originales se conservan sin modificaciones. Los conteos corresponde
 
 **Política de excepciones:** falla rápida (*fail-fast*). No se descartan silenciosamente filas ni se publica una carga parcial. No hay cuarentena implementada. Las copias concordantes se deduplican por una regla explícita; duplicados contradictorios, errores estructurales, dominios inválidos y claves foráneas huérfanas bloquean el flujo.
 
-## 5. Arquitectura de la tubería de datos
+## 5. Arquitectura del pipeline
 
 ```mermaid
 flowchart TD
@@ -54,10 +51,8 @@ flowchart TD
     G --> H
     H --> I[Seis tablas curadas CSV]
     I --> J[Great Expectations: compuerta curada]
-    J --> K[Verificar hashes SHA-256 aprobados]
-    K --> L[Carga a Data Warehouse PostgreSQL]
-    L --> M[Consultas analíticas R1–R4]
-    M --> N[Tablero de Control / Dashboard] 
+    J --> L[Carga a Data Warehouse PostgreSQL]
+    L --> N[Tablero de Control / Dashboard] 
 ```
 
 **Principio de control:** ninguna transformación debe continuar si falla una compuerta *raw*; ninguna carga debe ejecutarse si falla la compuerta curada o si los archivos cambian después de validarse.
@@ -118,37 +113,9 @@ La suite `curated_warehouse_suite`, ejecutada mediante `gx.curated_validation.ru
 
 El almacén analítico se implementa bajo un esquema en estrella multievento (constelación de hechos) en PostgreSQL (`workshop2.public`). Ambas fuentes convergen a través de la dimensión compartida conforme `dim_artist`, permitiendo responder los requerimientos analíticos sin forzar una unión directa fila a fila que multiplicaría medidas espuriamente.
 
+
+
 ---
-
-### Diagrama del modelo dimensional (Hechos vs Dimensiones)
-
-A continuación se presenta la separación estructural del modelo, ubicando en un bloque las **Dimensiones** (entidades de contexto) y en el otro los **Hechos** (eventos numéricos transaccionales), junto con sus atributos y claves:
-
-```mermaid
-flowchart LR
-    %% Subgrafo de Dimensiones
-    subgraph Dimensiones ["CAPA DE DIMENSIONES (Contexto Descriptivo)"]
-        direction TB
-        D_DATE["<b>dim_date</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 date_sk: BIGINT (PK)<br/>📅 year: INT (UK)<br/>📊 decade: INT"]
-        D_ARTIST["<b>dim_artist</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 artist_sk: BIGINT (PK)<br/>👤 artist_name: TEXT<br/>🏷️ artist_name_normalized: TEXT (UK)"]
-        D_CANCION["<b>dim_cancion</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 track_sk: BIGINT (PK)<br/>🎵 track_id: TEXT (UK)<br/>💿 track_name: TEXT<br/>📁 album_name: TEXT<br/>👥 artists: TEXT<br/>⏱️ duration_ms: BIGINT<br/>🔞 explicit: BOOLEAN"]
-        D_GENERO["<b>dim_genero</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 genre_sk: BIGINT (PK)<br/>🎸 genre_name: TEXT (UK)"]
-    end
-
-    %% Subgrafo de Hechos
-    subgraph Hechos ["CAPA DE HECHOS / FACTS (Eventos y Métricas)"]
-        direction TB
-        F_AWARD["<b>fact_music_award</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 music_award_sk: BIGINT (PK)<br/>🔗 date_sk: BIGINT (FK)<br/>🔗 artist_sk: BIGINT (FK, nulo)<br/>🏆 category: TEXT<br/>⭐ nominee: TEXT<br/>📜 title: TEXT<br/>✔️ winner: BOOLEAN<br/>📈 award_count: INT (= 1)"]
-        F_SPOTIFY["<b>fact_spotify_artist_track_genre</b><br/>━━━━━━━━━━━━━━━━━━<br/>🔑 spotify_credit_sk: BIGINT (PK)<br/>🔗 track_sk: BIGINT (FK)<br/>🔗 artist_sk: BIGINT (FK, nulo)<br/>🔗 genre_sk: BIGINT (FK)<br/>🔥 popularity: SMALLINT [0,100]<br/>💃 danceability: FLOAT [0,1]<br/>⚡ energy: FLOAT [0,1]<br/>✨ valence: FLOAT [0,1]"]
-    end
-
-    %% Relaciones foráneas desde Hechos hacia Dimensiones
-    F_AWARD -->|date_sk| D_DATE
-    F_AWARD -->|artist_sk (opcional)| D_ARTIST
-    F_SPOTIFY -->|artist_sk (opcional)| D_ARTIST
-    F_SPOTIFY -->|track_sk| D_CANCION
-    F_SPOTIFY -->|genre_sk| D_GENERO
-```
 
 #### Diagrama de Entidad-Relación Detallado (ERD)
 
